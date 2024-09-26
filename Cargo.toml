@@ -1,0 +1,11 @@
+[package]
+name = "mrtdump"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+byteorder = "1.5.0"
+bzip2 = "0.4.4"
+anyhow = "1.0.86"
+time = "0.3.36"
+lazy_static = "1.5.0"
