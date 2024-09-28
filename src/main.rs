@@ -91,53 +91,15 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    MrtRecord::RibIpv4Unicast(mut nlri) => {
+                    MrtRecord::RibIpv4Unicast(nlri) => {
+                        load_nlri(nlri, &peer_index_table, &mut routing_table);
+                        count += 1;
+                    },
+                    MrtRecord::RibIpv6Unicast(nlri) => {
+                        load_nlri(nlri, &peer_index_table, &mut routing_table);
+                        count += 1;
+                    },
 
-                        // Before loading the NLRI into the routing table,
-                        // execute any specified load filters, in the order
-                        // defined.
-                        //
-                        // Load filters will return whether the filter
-                        // should be continued to be processed (true),
-                        // or discarded (false), and any matched NLRIs will
-                        // be printed using the selected dialect (Cisco/Juniper)
-                        //
-                        // We start with permit (true) logic, so no filters means
-                        // all routes of course
-                        let matched: bool = GETOPT.filter.iter().fold(true, |x, f| {
-                            if x {
-                                f.eval(&mut nlri)
-                            } else {
-                                x
-                            }
-                        });
-                        if matched {
-
-                            // Display the matched route if there are filters in play
-                            // or if verbose  is enabled
-                            if GETOPT.verbose || GETOPT.filter.len() > 0 {
-                                if GETOPT.juniper_output {
-                                    juniper_show_route(&peer_index_table, &nlri);
-                                } else if GETOPT.terse_output {
-                                    csv_show_route(&peer_index_table, &nlri);
-                                } else {
-                                    cisco_show_ip_bgp(&peer_index_table, &nlri);
-                                }
-                            }
-
-                            // NLRIs are moved into the routing table here
-                            match nlri.prefix {
-                                IpAddr::V4(ipv4) => {
-                                    routing_table.v4.add(&ipv4, nlri.plen, nlri);
-                                    count += 1;
-                                },
-                                IpAddr::V6(ipv6) => {
-                                    routing_table.v6.add(&ipv6, nlri.plen, nlri);
-                                    count += 1;
-                                }
-                            }
-                        }
-                    }
                     _ => {},
                 }
             }
@@ -195,4 +157,53 @@ fn main() -> Result<()> {
 
     #[allow(unreachable_code)]
     Ok(())
+}
+
+// Before loading the NLRI into the routing table,
+// execute any specified load filters, in the order
+// defined.
+//
+// Load filters will return whether the filter
+// should be continued to be processed (true),
+// or discarded (false), and any matched NLRIs will
+// be printed using the selected dialect (Cisco/Juniper)
+//
+// We start with permit (true) logic, so no filters means
+// all routes of course
+pub fn load_nlri(mut nlri: MrtNlri,
+                   peer_index_table: &Option<MrtPeerIndexTable>,
+                    routing_table: &mut RoutingTable<MrtNlri>) {
+
+    let matched: bool = GETOPT.filter.iter().fold(true, |x, f| {
+        if x {
+            f.eval(&mut nlri)
+        } else {
+            x
+        }
+    });
+
+    if matched {
+
+        // Display the matched route if there are filters in play
+        // or if verbose  is enabled
+        if GETOPT.verbose || GETOPT.filter.len() > 0 {
+            if GETOPT.juniper_output {
+                juniper_show_route(peer_index_table, &nlri);
+            } else if GETOPT.terse_output {
+                csv_show_route(peer_index_table, &nlri);
+            } else {
+                cisco_show_ip_bgp(peer_index_table, &nlri);
+            }
+        }
+
+        match nlri.prefix {
+            IpAddr::V4(ipv4) => {
+                routing_table.v4.add(&ipv4, nlri.plen, nlri);
+            },
+            IpAddr::V6(ipv6) => {
+                routing_table.v6.add(&ipv6, nlri.plen, nlri);
+            }
+        }
+    }
+
 }

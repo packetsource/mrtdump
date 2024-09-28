@@ -141,32 +141,59 @@ impl Display for MrtNlri {
 }
 
 impl MrtNlri {
-    pub fn parse<R: Read + BufRead>(reader: &mut R) -> Result<MrtNlri> {
-        let sequence = reader.read_u32::<BigEndian>()?;
-        let plen: u8 = reader.read_u8()?;
-        let mut nlri_data = vec![0u8; 4];   // IPv4
-        reader.read_exact(&mut nlri_data[..((plen + 7)/8) as usize])?;
-        let prefix = IpAddr::V4(Ipv4Addr::from_bits(nlri_data.as_slice().read_u32::<BigEndian>()?));
-        let entry_count = reader.read_u16::<BigEndian>()?;
+    pub fn parse_rib_entry<R: Read + BufRead>(reader: &mut R) -> Result<MrtRibEntry> {
 
+        let peer_id = reader.read_u16::<BigEndian>()?;
+        let origin_time = reader.read_u32::<BigEndian>()?;
+        let attribute_length = reader.read_u16::<BigEndian>()?;
+
+        let mut attributes: &[u8] = &reader.fill_buf()?[..attribute_length as usize];
+        let attributes = MrtAttribute::parse(&mut attributes)?;
+        reader.consume(attribute_length as usize);
+
+        Ok(
+            MrtRibEntry {
+                peer_id,
+                origin_time: UNIX_EPOCH.checked_add(Duration::from_secs(origin_time as u64)).unwrap_or(UNIX_EPOCH),
+                attributes
+            }
+        )
+    }
+
+    pub fn parse_v4<R: Read + BufRead>(reader: &mut R) -> Result<MrtNlri> {
+        let mut addr_buf: [u8; 4] = [0u8; 4];
+        let sequence = reader.read_u32::<BigEndian>()?;
+
+        let plen: u8 = reader.read_u8()?;
+        reader.read_exact(&mut addr_buf[..((plen + 7)/8) as usize])?;
+        let mut slice = &addr_buf[..];
+        let prefix = IpAddr::V4(Ipv4Addr::from_bits(slice.read_u32::<BigEndian>()?));
+
+        let entry_count = reader.read_u16::<BigEndian>()?;
         let mut rib_entries = vec![];
         for _ in 0..entry_count {
-            let peer_id = reader.read_u16::<BigEndian>()?;
-            let origin_time=reader.read_u32::<BigEndian>()?;
-            let attribute_length = reader.read_u16::<BigEndian>()?;
-            // let mut attributes: Vec<u8> = vec![0u8; attribute_length as usize];
-            // reader.read_exact(&mut attributes)?;
-            let mut attributes: &[u8] = &reader.fill_buf()?[..attribute_length as usize];
-            // println!("{:02x?}", &attributes);
-            // let attributes = MrtAttribute::parse(&mut attributes.as_slice())?;
-            let attributes = MrtAttribute::parse(&mut attributes)?;
-            reader.consume(attribute_length as usize);
-            rib_entries.push(MrtRibEntry{peer_id,
-                origin_time: UNIX_EPOCH.checked_add(Duration::from_secs(origin_time as u64)).unwrap_or(UNIX_EPOCH),
-                attributes})
+            rib_entries.push(Self::parse_rib_entry(reader)?);
         }
 
         Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })
+    }
+
+    pub fn parse_v6<R: Read + BufRead>(reader: &mut R) -> Result<MrtNlri> {
+        let mut addr_buf: [u8; 16] = [0u8; 16];
+        let sequence = reader.read_u32::<BigEndian>()?;
+
+        let plen: u8 = reader.read_u8()?;
+        reader.read_exact(&mut addr_buf[..((plen + 7)/8) as usize])?;
+        let mut slice = &addr_buf[..];
+        let prefix = IpAddr::V6(Ipv6Addr::from_bits(slice.read_u128::<BigEndian>()?));
+
+        let entry_count = reader.read_u16::<BigEndian>()?;
+        let mut rib_entries = vec![];
+        for _ in 0..entry_count {
+            rib_entries.push(Self::parse_rib_entry(reader)?);
+        }
+
+       Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })
     }
 
 }

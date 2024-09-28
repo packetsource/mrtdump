@@ -43,9 +43,9 @@ impl Display for Mrt {
 pub enum MrtRecord {
     PeerIndexTable(MrtPeerIndexTable),
     RibIpv4Unicast(MrtNlri),
-    RibIpv4Multicast,
-    RibIpv6Unicast,
-    RibIpv6Multicast,
+    RibIpv4Multicast(MrtNlri),
+    RibIpv6Unicast(MrtNlri),
+    RibIpv6Multicast(MrtNlri),
     RibGeneric,
 }
 
@@ -66,7 +66,16 @@ impl Mrt {
                 MrtRecord::PeerIndexTable(MrtPeerIndexTable::parse(&mut slice)?)
             },
             (13, 2) => {
-                MrtRecord::RibIpv4Unicast(MrtNlri::parse(&mut slice)?)
+                MrtRecord::RibIpv4Unicast(MrtNlri::parse_v4(&mut slice)?)
+            },
+            (13, 3) => {
+                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v4(&mut slice)?)
+            },
+            (13, 4) => {
+                MrtRecord::RibIpv6Unicast(MrtNlri::parse_v6(&mut slice)?)
+            },
+            (13, 5) => {
+                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v6(&mut slice)?)
             },
             _ => {
                 eprintln!("Unknown MRT record: {}/{}", mrt_type, mrt_subtype);
