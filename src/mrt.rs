@@ -78,7 +78,9 @@ impl Mrt {
                 MrtRecord::RibIpv4Multicast(MrtNlri::parse_v6(&mut slice)?)
             },
             _ => {
-                eprintln!("Unknown MRT record: {}/{}", mrt_type, mrt_subtype);
+                if GETOPT.verbose {
+                    eprintln!("Unknown MRT record: {}/{}", mrt_type, mrt_subtype);
+                }
                 MrtRecord::RibGeneric
             }
         };
