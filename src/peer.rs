@@ -3,7 +3,7 @@ use std::net::IpAddr;
 
 use crate::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MrtPeer {
     pub peer_type_a: bool,
     pub peer_type_i: bool,
@@ -24,6 +24,18 @@ pub struct MrtPeerIndexTable {
 impl Display for MrtPeer {
     fn fmt(&self, f: &mut Formatter<'_>) -> anyhow::Result<(), std::fmt::Error> {
         write!(f, "{} (AS{})", &self.peer_address, &self.peer_as)
+    }
+}
+
+impl Default for MrtPeer {
+    fn default() -> MrtPeer {
+        MrtPeer {
+            peer_type_a: true,
+            peer_type_i: false,
+            peer_id: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            peer_address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            peer_as: 0,
+        }
     }
 }
 

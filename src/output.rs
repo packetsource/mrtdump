@@ -1,5 +1,6 @@
 use crate::*;
-pub fn cisco_show_ip_bgp_header(version: u32, peers: &Option<crate::peer::MrtPeerIndexTable>) {
+pub fn cisco_show_ip_bgp_header(version: u32,
+                                peers: &Option<crate::peer::MrtPeerIndexTable>) {
     let (collector_id, view_name): (IpAddr, &String) = {
         if let Some(peers) = peers {
             (peers.collector_id, &peers.view_name)
@@ -21,12 +22,15 @@ pub fn cisco_show_ip_bgp_header(version: u32, peers: &Option<crate::peer::MrtPee
              "Path"
     );
 }
-pub fn cisco_show_ip_bgp(_peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
+pub fn cisco_show_ip_bgp(_peers: &Option<MrtPeerIndexTable>,
+                         prefix: &IpAddr,
+                         plen: u8,
+                         route_entries: &Vec<MrtRibEntry>) {
     let mut count: u64 = 0;
-    for rt in &route.rib_entries {
+    for rt in route_entries {
         if count==0 {
             println!("* {:24}{:24}\t{}\t{}\t{}\t{} {}",
-                     format!("{}/{}", route.prefix, route.plen),
+                     format!("{}/{}", prefix, plen),
                      rt.get_nexthop(),
                      rt.get_med().map(|x| x.to_string()).unwrap_or(String::new()),
                      rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),
@@ -49,13 +53,16 @@ pub fn cisco_show_ip_bgp(_peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
     }
 }
 
-pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
+pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>,
+                                prefix: &IpAddr,
+                                plen: u8,
+                                route_entries: &Vec<MrtRibEntry>) {
     let peers = peers.as_ref().unwrap();
-    println!("BGP routing table entry for {}/{}", route.prefix, route.plen);
-    println!("Paths: ({} available)", route.rib_entries.len());
+    println!("BGP routing table entry for {}/{}", prefix, plen);
+    println!("Paths: ({} available)", route_entries.len());
     println!("  Not advertised to any peer");   // standard Cisco gubbins
 
-    for rt in &route.rib_entries {
+    for rt in route_entries {
         println!("  {}", rt.get_aspath());
         println!("    {} from {} ({})",
                  rt.get_nexthop(),
@@ -86,9 +93,12 @@ pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>, route: &MrtNl
 }
 
 
-pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
+pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>,
+                          prefix: &IpAddr,
+                          plen: u8,
+                          route_entries: &Vec<MrtRibEntry>) {
     let mut count: u64 = 0;
-    for rt in &route.rib_entries {
+    for rt in route_entries {
         let age = rt.origin_time.elapsed().unwrap_or_default();
         let mut rt_text:Vec<String> = vec![format!("[BGP/170] {}", util::friendly_duration(age))];
         if let Some(med) = rt.get_med() {
@@ -101,8 +111,8 @@ pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
 
         if count==0 {
             println!("{}/{}\t{}",
-                     route.prefix,
-                     route.plen, rt_text.join(", ")
+                     prefix,
+                     plen, rt_text.join(", ")
             );
         } else {
             println!("\t\t{}",
@@ -119,14 +129,17 @@ pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
     }
 }
 
-pub fn csv_show_route(peers: &Option<MrtPeerIndexTable>, route: &MrtNlri) {
+pub fn csv_show_route(peers: &Option<MrtPeerIndexTable>,
+                      prefix: &IpAddr,
+                      plen: u8,
+                      route_entries: &Vec<MrtRibEntry>) {
     let peers = peers.as_ref().unwrap();
 
     println!("route/plen|neighbor|next_hop|med|localpref|aspath|communities");
 
-    for rt in &route.rib_entries {
+    for rt in route_entries {
         println!("{}/{}|{}|{}|{}|{}|{} {}|{}",
-            route.prefix, route.plen,
+            prefix, plen,
             &peers[rt.peer_id as usize].peer_address,
             rt.get_nexthop(),
             rt.get_med().map_or(String::from(""), |x| x.to_string()),

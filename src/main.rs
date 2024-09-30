@@ -68,7 +68,7 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut routing_table = RoutingTable::<MrtNlri>::new();
+    let mut routing_table = RoutingTable::new();
     let mut peer_index_table: Option<MrtPeerIndexTable> = None;
 
     let mut count: u64 = 0;
@@ -92,12 +92,14 @@ fn main() -> Result<()> {
                         }
                     }
                     MrtRecord::RibIpv4Unicast(nlri) => {
-                        load_nlri(nlri, &peer_index_table, &mut routing_table);
-                        count += 1;
+                        if load_nlri(nlri, &peer_index_table, &mut routing_table) {
+                            count += 1;
+                        }
                     },
                     MrtRecord::RibIpv6Unicast(nlri) => {
-                        load_nlri(nlri, &peer_index_table, &mut routing_table);
-                        count += 1;
+                        if load_nlri(nlri, &peer_index_table, &mut routing_table) {
+                            count += 1;
+                        }
                     },
 
                     _ => {},
@@ -133,13 +135,13 @@ fn main() -> Result<()> {
                     match IpAddr::from_str(&query) {
                         Ok(ipaddr) => {
                             let result = routing_table.get(&ipaddr);
-                            if let Some((_ipaddr, _plen, nlri)) = result {
+                            if let Some((ipaddr, plen, route_entries)) = result {
                                 if GETOPT.juniper_output {
-                                    juniper_show_route(&peer_index_table, &nlri);
+                                    juniper_show_route(&peer_index_table, &ipaddr, plen, &route_entries);
                                 } else if GETOPT.terse_output {
-                                    csv_show_route(&peer_index_table, &nlri);
+                                    csv_show_route(&peer_index_table, &ipaddr, plen, &route_entries);
                                 } else {
-                                    cisco_show_ip_bgp_detail(&peer_index_table, &nlri);
+                                    cisco_show_ip_bgp_detail(&peer_index_table, &ipaddr, plen, &route_entries);
                                 }
                             } else {
                                 println!("Not found: {}", &query);
@@ -170,9 +172,11 @@ fn main() -> Result<()> {
 //
 // We start with permit (true) logic, so no filters means
 // all routes of course
+//
+// The NLRI is consumed by this operation
 pub fn load_nlri(mut nlri: MrtNlri,
                    peer_index_table: &Option<MrtPeerIndexTable>,
-                    routing_table: &mut RoutingTable<MrtNlri>) {
+                    routing_table: &mut RoutingTable) -> bool {
 
     let matched: bool = GETOPT.filter.iter().fold(true, |x, f| {
         if x {
@@ -188,22 +192,23 @@ pub fn load_nlri(mut nlri: MrtNlri,
         // or if verbose  is enabled
         if GETOPT.verbose || GETOPT.filter.len() > 0 {
             if GETOPT.juniper_output {
-                juniper_show_route(peer_index_table, &nlri);
+                juniper_show_route(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
             } else if GETOPT.terse_output {
-                csv_show_route(peer_index_table, &nlri);
+                csv_show_route(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
             } else {
-                cisco_show_ip_bgp(peer_index_table, &nlri);
+                cisco_show_ip_bgp(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
             }
         }
 
         match nlri.prefix {
             IpAddr::V4(ipv4) => {
-                routing_table.v4.add(&ipv4, nlri.plen, nlri);
+                routing_table.v4.add(&ipv4, nlri.plen, nlri.rib_entries);
             },
             IpAddr::V6(ipv6) => {
-                routing_table.v6.add(&ipv6, nlri.plen, nlri);
+                routing_table.v6.add(&ipv6, nlri.plen, nlri.rib_entries);
             }
         }
     }
+    matched
 
 }
