@@ -59,22 +59,24 @@ fn main() -> Result<()> {
         dbg!(&*GETOPT);
     }
 
-    let filename = GETOPT.args.get(0).expect("Expected input MRT filename");
-    let mut reader: Box<dyn BufRead> = {
-        if filename.ends_with(".bz2") {
-            Box::new(BufReader::new(BzDecoder::new(BufReader::new(std::fs::File::open(filename)?)))) as Box<dyn BufRead>
-        } else {
-            Box::new(BufReader::new(std::fs::File::open(filename)?)) as Box<dyn BufRead>
-        }
-    };
+    // let filename = GETOPT.args.get(0).expect("Expected input MRT filename");
 
     // Global
-    let mut count: u64 = 0;
-    let start_time = Instant::now();
     let mut routing_table = RoutingTable::new();
     let mut peers: HashMap<(IpAddr, String, u16), Rc<MrtPeer>> = HashMap::new();
 
-    {
+    for filename in &GETOPT.args {
+
+        let mut count: u64 = 0;
+        let start_time = Instant::now();
+
+        let mut reader: Box<dyn BufRead> = {
+            if filename.ends_with(".bz2") {
+                Box::new(BufReader::new(BzDecoder::new(BufReader::new(std::fs::File::open(filename)?)))) as Box<dyn BufRead>
+            } else {
+                Box::new(BufReader::new(std::fs::File::open(filename)?)) as Box<dyn BufRead>
+            }
+        };
 
         // For each file
         let mut peer_index_table: MrtPeerIndexTable = MrtPeerIndexTable::default();
@@ -228,5 +230,4 @@ pub fn load_nlri(mut nlri: MrtNlri,
         }
     }
     matched
-
 }
