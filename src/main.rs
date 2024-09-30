@@ -11,6 +11,8 @@ use std::process;
 use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
 use anyhow::__private::kind::TraitKind;
 use time::OffsetDateTime;
+use std::collections::HashMap;
+use std::rc::Rc;
 use lazy_static::lazy_static;
 
 mod mrt; use mrt::*;
@@ -52,9 +54,7 @@ pub fn usage() {
     process::exit(1);
 }
 
-// Main function to demonstrate usage
 fn main() -> Result<()> {
-
     if GETOPT.verbose {
         dbg!(&*GETOPT);
     }
@@ -68,53 +68,70 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut routing_table = RoutingTable::new();
-    let mut peer_index_table: Option<MrtPeerIndexTable> = None;
-
+    // Global
     let mut count: u64 = 0;
     let start_time = Instant::now();
+    let mut routing_table = RoutingTable::new();
+    let mut peers: HashMap<(IpAddr, String, u16), Rc<MrtPeer>> = HashMap::new();
 
-    loop {
+    {
 
-        match Mrt::parse(&mut reader) {
-            Ok(mrt) => {
-                match mrt.data {
-                    MrtRecord::PeerIndexTable(table) => {
-                        peer_index_table = Some(table);
+        // For each file
+        let mut peer_index_table: MrtPeerIndexTable = MrtPeerIndexTable::default();
 
-                        // If the filter is empty, or we are in verbose mode, then
-                        // show the Cisco header, because we will print summary routes
-                        // as we go
-                        if ! GETOPT.filter.is_empty() {
-                            if GETOPT.juniper_output == false && GETOPT.terse_output==false {
-                                cisco_show_ip_bgp_header(mrt.timestamp, &peer_index_table);
+        // For each MRT message
+        loop {
+            match Mrt::parse(&mut reader, &peer_index_table) {
+                Ok(mrt) => {
+                    match mrt.data {
+                        MrtRecord::PeerIndexTable(table) => {
+                            let collector_id = table.collector_id.clone();
+                            let view_name = table.view_name.clone();
+
+                            peer_index_table = table;   // store the table
+
+                            // Load all the peers into the global table
+                            for (index, peer) in peer_index_table.peers.iter().enumerate() {
+                                if index < u16::MAX.into() {
+                                    peers.insert((collector_id, view_name.clone(), index as u16), Rc::clone(peer));
+                                }
+                            }
+
+                            // If the filter is empty, or we are in verbose mode, then
+                            // show the Cisco header, because we will print summary routes
+                            // as we go
+                            if !GETOPT.filter.is_empty() {
+                                if GETOPT.juniper_output == false && GETOPT.terse_output == false {
+                                    cisco_show_ip_bgp_header(mrt.timestamp,
+                                                             &peer_index_table);
+                                }
                             }
                         }
-                    }
-                    MrtRecord::RibIpv4Unicast(nlri) => {
-                        if load_nlri(nlri, &peer_index_table, &mut routing_table) {
-                            count += 1;
-                        }
-                    },
-                    MrtRecord::RibIpv6Unicast(nlri) => {
-                        if load_nlri(nlri, &peer_index_table, &mut routing_table) {
-                            count += 1;
-                        }
-                    },
+                        MrtRecord::RibIpv4Unicast(nlri) => {
+                            if load_nlri(nlri, &mut routing_table) {
+                                count += 1;
+                            }
+                        },
+                        MrtRecord::RibIpv6Unicast(nlri) => {
+                            if load_nlri(nlri, &mut routing_table) {
+                                count += 1;
+                            }
+                        },
 
-                    _ => {},
-                }
-            }
-            Err(e) => {
-                // what a ball-ache just to catch EOF as a non-error - do better, Adam!
-                if let Some(e) = e.downcast_ref::<std::io::Error>() {
-                    if e.kind() == ErrorKind::UnexpectedEof {
-                        eprintln!("{} entries from {} in {:?}", count, &filename, start_time.elapsed());
-                        break;
+                        _ => {},
                     }
                 }
-                println!("Encountered error while reading {}: {}", &filename, &e);
-                break;
+                Err(e) => {
+                    // what a ball-ache just to catch EOF as a non-error - do better, Adam!
+                    if let Some(e) = e.downcast_ref::<std::io::Error>() {
+                        if e.kind() == ErrorKind::UnexpectedEof {
+                            eprintln!("{} entries from {} in {:?}", count, &filename, start_time.elapsed());
+                            break;
+                        }
+                    }
+                    println!("Encountered error while reading {}: {}", &filename, &e);
+                    break;
+                }
             }
         }
     }
@@ -137,11 +154,11 @@ fn main() -> Result<()> {
                             let result = routing_table.get(&ipaddr);
                             if let Some((ipaddr, plen, route_entries)) = result {
                                 if GETOPT.juniper_output {
-                                    juniper_show_route(&peer_index_table, &ipaddr, plen, &route_entries);
+                                    juniper_show_route(&ipaddr, plen, &route_entries);
                                 } else if GETOPT.terse_output {
-                                    csv_show_route(&peer_index_table, &ipaddr, plen, &route_entries);
+                                    csv_show_route(&ipaddr, plen, &route_entries);
                                 } else {
-                                    cisco_show_ip_bgp_detail(&peer_index_table, &ipaddr, plen, &route_entries);
+                                    cisco_show_ip_bgp_detail(&ipaddr, plen, &route_entries);
                                 }
                             } else {
                                 println!("Not found: {}", &query);
@@ -156,6 +173,8 @@ fn main() -> Result<()> {
             }
         }
     }
+
+    // Load the MRT peer table for the file into the global hash
 
     #[allow(unreachable_code)]
     Ok(())
@@ -175,7 +194,6 @@ fn main() -> Result<()> {
 //
 // The NLRI is consumed by this operation
 pub fn load_nlri(mut nlri: MrtNlri,
-                   peer_index_table: &Option<MrtPeerIndexTable>,
                     routing_table: &mut RoutingTable) -> bool {
 
     let matched: bool = GETOPT.filter.iter().fold(true, |x, f| {
@@ -192,11 +210,11 @@ pub fn load_nlri(mut nlri: MrtNlri,
         // or if verbose  is enabled
         if GETOPT.verbose || GETOPT.filter.len() > 0 {
             if GETOPT.juniper_output {
-                juniper_show_route(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
+                juniper_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
             } else if GETOPT.terse_output {
-                csv_show_route(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
+                csv_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
             } else {
-                cisco_show_ip_bgp(peer_index_table, &nlri.prefix, nlri.plen, &nlri.rib_entries);
+                cisco_show_ip_bgp(&nlri.prefix, nlri.plen, &nlri.rib_entries);
             }
         }
 

@@ -51,7 +51,7 @@ pub enum MrtRecord {
 
 impl Mrt {
 
-    pub fn parse<R: Read + BufRead>(reader: &mut R) -> anyhow::Result<Mrt> {
+    pub fn parse<R: Read + BufRead>(reader: &mut R, peer_index_table: &MrtPeerIndexTable) -> anyhow::Result<Mrt> {
         let timestamp = reader.read_u32::<BigEndian>()?;
         let mrt_type = reader.read_u16::<BigEndian>()?;
         let mrt_subtype = reader.read_u16::<BigEndian>()?;
@@ -66,16 +66,16 @@ impl Mrt {
                 MrtRecord::PeerIndexTable(MrtPeerIndexTable::parse(&mut slice)?)
             },
             (13, 2) => {
-                MrtRecord::RibIpv4Unicast(MrtNlri::parse_v4(&mut slice)?)
+                MrtRecord::RibIpv4Unicast(MrtNlri::parse_v4(&mut slice, peer_index_table)?)
             },
             (13, 3) => {
-                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v4(&mut slice)?)
+                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v4(&mut slice, peer_index_table)?)
             },
             (13, 4) => {
-                MrtRecord::RibIpv6Unicast(MrtNlri::parse_v6(&mut slice)?)
+                MrtRecord::RibIpv6Unicast(MrtNlri::parse_v6(&mut slice, peer_index_table)?)
             },
             (13, 5) => {
-                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v6(&mut slice)?)
+                MrtRecord::RibIpv4Multicast(MrtNlri::parse_v6(&mut slice, peer_index_table)?)
             },
             _ => {
                 if GETOPT.verbose {

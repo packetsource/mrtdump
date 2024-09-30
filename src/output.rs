@@ -1,12 +1,12 @@
 use crate::*;
 pub fn cisco_show_ip_bgp_header(version: u32,
-                                peers: &Option<crate::peer::MrtPeerIndexTable>) {
+                                peers: &MrtPeerIndexTable) {
     let (collector_id, view_name): (IpAddr, &String) = {
-        if let Some(peers) = peers {
+        // if let Some(peers) = peers {
             (peers.collector_id, &peers.view_name)
-        } else {
-            (IpAddr::V4(Ipv4Addr::UNSPECIFIED), &String::from("default"))
-        }
+        // } else {
+        //     (IpAddr::V4(Ipv4Addr::UNSPECIFIED), &String::from("default"))
+        // }
     };
     println!("BGP table version is {}, local router ID is {}, view is \"{}\"",
              version, collector_id, view_name);
@@ -22,7 +22,8 @@ pub fn cisco_show_ip_bgp_header(version: u32,
              "Path"
     );
 }
-pub fn cisco_show_ip_bgp(_peers: &Option<MrtPeerIndexTable>,
+pub fn cisco_show_ip_bgp(
+    //peers: &MrtPeerIndexTable,
                          prefix: &IpAddr,
                          plen: u8,
                          route_entries: &Vec<MrtRibEntry>) {
@@ -53,11 +54,12 @@ pub fn cisco_show_ip_bgp(_peers: &Option<MrtPeerIndexTable>,
     }
 }
 
-pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>,
+pub fn cisco_show_ip_bgp_detail(
+    //peers: &MrtPeerIndexTable,
                                 prefix: &IpAddr,
                                 plen: u8,
                                 route_entries: &Vec<MrtRibEntry>) {
-    let peers = peers.as_ref().unwrap();
+    // let peers = peers.as_ref().unwrap();
     println!("BGP routing table entry for {}/{}", prefix, plen);
     println!("Paths: ({} available)", route_entries.len());
     println!("  Not advertised to any peer");   // standard Cisco gubbins
@@ -66,8 +68,8 @@ pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>,
         println!("  {}", rt.get_aspath());
         println!("    {} from {} ({})",
                  rt.get_nexthop(),
-                 &peers[rt.peer_id as usize].peer_address,
-                 &peers[rt.peer_id as usize].peer_id);
+                 &rt.peer.peer_address,
+                 &rt.peer.peer_id);
 
         let mut rt_text = Vec::<String>::new();
         rt_text.push(format!("Origin {}", match rt.get_origin() {
@@ -93,7 +95,8 @@ pub fn cisco_show_ip_bgp_detail(peers: &Option<MrtPeerIndexTable>,
 }
 
 
-pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>,
+pub fn juniper_show_route(
+    //peers: &MrtPeerIndexTable,
                           prefix: &IpAddr,
                           plen: u8,
                           route_entries: &Vec<MrtRibEntry>) {
@@ -105,9 +108,7 @@ pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>,
             rt_text.push(format!("MED {}", med));
         }
         rt_text.push(format!("localpref {}", rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF)));
-        if let Some(peers) = peers {
-            rt_text.push(format!("from {}", peers[rt.peer_id as usize].peer_address.to_string()));
-        }
+        rt_text.push(format!("from {}", rt.peer.peer_address));
 
         if count==0 {
             println!("{}/{}\t{}",
@@ -129,18 +130,19 @@ pub fn juniper_show_route(peers: &Option<MrtPeerIndexTable>,
     }
 }
 
-pub fn csv_show_route(peers: &Option<MrtPeerIndexTable>,
+pub fn csv_show_route(
+    //peers: &MrtPeerIndexTable,
                       prefix: &IpAddr,
                       plen: u8,
                       route_entries: &Vec<MrtRibEntry>) {
-    let peers = peers.as_ref().unwrap();
+    // let peers = peers.as_ref().unwrap();
 
     println!("route/plen|neighbor|next_hop|med|localpref|aspath|communities");
 
     for rt in route_entries {
         println!("{}/{}|{}|{}|{}|{}|{} {}|{}",
             prefix, plen,
-            &peers[rt.peer_id as usize].peer_address,
+            rt.peer.peer_address,
             rt.get_nexthop(),
             rt.get_med().map_or(String::from(""), |x| x.to_string()),
             rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),

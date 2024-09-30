@@ -8,6 +8,7 @@ use crate::*;
 #[derive(Debug)]
 pub struct MrtRibEntry {
     pub peer_id: u16,
+    pub peer: Rc<MrtPeer>,
     pub origin_time: SystemTime,
     pub attributes: Vec<MrtAttribute>
 }
@@ -141,9 +142,10 @@ impl Display for MrtNlri {
 }
 
 impl MrtNlri {
-    pub fn parse_rib_entry<R: Read + BufRead>(reader: &mut R) -> Result<MrtRibEntry> {
+    pub fn parse_rib_entry<R: Read + BufRead>(reader: &mut R, peer_index_table: &MrtPeerIndexTable) -> Result<MrtRibEntry> {
 
         let peer_id = reader.read_u16::<BigEndian>()?;
+        // need to look it up here
         let origin_time = reader.read_u32::<BigEndian>()?;
         let attribute_length = reader.read_u16::<BigEndian>()?;
 
@@ -154,13 +156,17 @@ impl MrtNlri {
         Ok(
             MrtRibEntry {
                 peer_id,
+                peer: Rc::clone(peer_index_table
+                    .peers
+                    .get(peer_id as usize)
+                    .ok_or(anyhow!("invalid peer index {}", peer_id))?),
                 origin_time: UNIX_EPOCH.checked_add(Duration::from_secs(origin_time as u64)).unwrap_or(UNIX_EPOCH),
                 attributes
             }
         )
     }
 
-    pub fn parse_v4<R: Read + BufRead>(reader: &mut R) -> Result<MrtNlri> {
+    pub fn parse_v4<R: Read + BufRead>(reader: &mut R, peer_index_table: &MrtPeerIndexTable) -> Result<MrtNlri> {
         let mut addr_buf: [u8; 4] = [0u8; 4];
         let sequence = reader.read_u32::<BigEndian>()?;
 
@@ -172,13 +178,13 @@ impl MrtNlri {
         let entry_count = reader.read_u16::<BigEndian>()?;
         let mut rib_entries = vec![];
         for _ in 0..entry_count {
-            rib_entries.push(Self::parse_rib_entry(reader)?);
+            rib_entries.push(Self::parse_rib_entry(reader, peer_index_table)?);
         }
 
         Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })
     }
 
-    pub fn parse_v6<R: Read + BufRead>(reader: &mut R) -> Result<MrtNlri> {
+    pub fn parse_v6<R: Read + BufRead>(reader: &mut R, peer_index_table: &MrtPeerIndexTable) -> Result<MrtNlri> {
         let mut addr_buf: [u8; 16] = [0u8; 16];
         let sequence = reader.read_u32::<BigEndian>()?;
 
@@ -190,7 +196,7 @@ impl MrtNlri {
         let entry_count = reader.read_u16::<BigEndian>()?;
         let mut rib_entries = vec![];
         for _ in 0..entry_count {
-            rib_entries.push(Self::parse_rib_entry(reader)?);
+            rib_entries.push(Self::parse_rib_entry(reader, peer_index_table)?);
         }
 
        Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })

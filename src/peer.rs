@@ -17,7 +17,7 @@ pub struct MrtPeerIndexTable {
     pub collector_id: IpAddr,
     pub view_name: String,
     pub peer_count: u16,
-    pub peers: Vec<MrtPeer>
+    pub peers: Vec<Rc<MrtPeer>>
 }
 
 
@@ -48,7 +48,12 @@ impl MrtPeerIndexTable {
         let view_name = String::from_utf8(view_name)?;
         let peer_count = reader.read_u16::<BigEndian>()?;
 
-        let mut peers: Vec<MrtPeer> = vec![];
+        let mut peer_index_table = MrtPeerIndexTable {
+            collector_id,
+            view_name,
+            peer_count,
+            ..Default::default()
+        };
         for _ in 0..peer_count {
             let peer_type = reader.read_u8()?;
 
@@ -68,21 +73,35 @@ impl MrtPeerIndexTable {
             };
             let peer = MrtPeer { peer_type_a, peer_type_i, peer_id, peer_address, peer_as };
             // dbg!(&peer);
-            peers.push(peer);
+            peer_index_table.peers.push(Rc::new(peer));
         }
-        Ok(MrtPeerIndexTable { collector_id, view_name, peer_count, peers })
+        Ok(peer_index_table)
     }
-
 }
 
-impl std::ops::Index<usize> for MrtPeerIndexTable {
-    type Output = MrtPeer;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        if index < self.peers.len() {
-            & self.peers[index]
-        } else {
-            panic!("peer index out of range!");
+impl Default for MrtPeerIndexTable {
+    fn default() -> MrtPeerIndexTable {
+        MrtPeerIndexTable {
+            collector_id: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            view_name: String::new(),
+            peer_count: 0,
+            peers: Vec::<std::rc::Rc<peer::MrtPeer>>::new()
         }
     }
 }
+
+
+// Don't want a panicking index operator in the middle of an MRT file, thank you
+//
+// impl std::ops::Index<usize> for MrtPeerIndexTable {
+//     type Output = Rc<MrtPeer>;
+
+    //
+    // fn index(&self, index: usize) -> &Self::Output {
+    //     if index < self.peers.len() {
+    //         & self.peers[index]
+    //     } else {
+    //         panic!("peer index out of range!");
+    //     }
+    // }
+// }
