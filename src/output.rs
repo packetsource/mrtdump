@@ -75,8 +75,8 @@ pub fn cisco_show_ip_bgp_detail(
         rt_text.push(format!("Origin {}", match rt.get_origin() {
             0 => "IGP",
             1 => "EGP",
-            2 => "Incomplete",
-            _ => "Unknown"
+            2 => "incomplete",
+            _ => "unknown"
         }));
         if let Some(med) = rt.get_med() {
             rt_text.push(format!("metric {}", med));
