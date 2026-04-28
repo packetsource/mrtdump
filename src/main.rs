@@ -1,19 +1,37 @@
 #![allow(dead_code, unused_imports)]
+
+// RIPE RIS URL format:   https://data.ris.ripe.net/rrcXX/YYYY.MM/TYPE.YYYYMMDD.HHmm.gz
+// Routeviews URL format: https://archive.routeviews.org/route-views.linx/bgpdata/
+// Routeviews URL format: https://archive.routeviews.org/route-views.linx/bgpdata/2004.03/RIBS/
+
+
 use std::env;
 use std::io::{self, Read, BufReader, BufRead, ErrorKind, Write};
+use std::fs::{self, File};
 use std::str::FromStr;
+use std::path::Path;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use byteorder::{BigEndian, ReadBytesExt};
-use bzip2::read::BzDecoder;
-use anyhow::{Result, anyhow, Context};
 use std::fmt::{Display, Formatter};
 use std::process;
 use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
-use anyhow::__private::kind::TraitKind;
-use time::OffsetDateTime;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+use byteorder::{BigEndian, ReadBytesExt};
+use bzip2::read::BzDecoder;
+use flate2::bufread::GzDecoder;
+use anyhow::{Result, anyhow, Context};
+
+use bytes::Bytes;
 use lazy_static::lazy_static;
+use time::format_description::{self, well_known::Rfc2822};
+use time::OffsetDateTime;
+use reqwest::blocking::Client;
+use url::Url;
+use serde::{Serialize, Deserialize};
+use serde_json;
+use uuid::Uuid;
+use time;
 
 mod mrt; use mrt::*;
 mod rib; use rib::*;
@@ -26,16 +44,21 @@ mod filter; use filter::*;
 mod ipaddrmask; use ipaddrmask::*;
 mod output; use output::*;
 
+mod http; use http::*;
+
 mod routing_table; use routing_table::*;
 mod trie;
 mod prefix;
-mod community; use community::*;
+mod community;
+mod cache;
+mod sources;
 
+use community::*;
 use prefix::*;
-
 use trie::*;
-
 use peer::*;
+use cache::*;
+use sources::*;
 
 lazy_static! { static ref GETOPT: getopt::Getopt = getopt::getopt(); }
 
@@ -43,14 +66,21 @@ const CISCO_DEFAULT_WEIGHT: u32 = 32768;
 const DEFAULT_LOCAL_PREF: u32 = 100;
 
 pub fn usage() {
-    eprintln!("Usage: mrtdump [-v] [-j] [-i] [-f filter] filename");
+    eprintln!("Usage: mrtdump [-v] [-j] [-t] [-i] [-f filter] filename");
     eprintln!("       -v     verbose/debug (troubleshooting)");
-    eprintln!("       -f     filter the routes loaded: (filters are ANDed, with initial default permit-all)");
+    eprintln!("       -S RIPE | RV");
+    eprintln!("              load all known MRT files for yesterday from specified source");
+    eprintln!("       -f     filter the routes loaded: (filters are ANDed, with initial default ");
+    eprintln!("              permit-all)");
+    eprintln!("                 A.B.C.D   - any routes equal or less-specific than the IP address");
     eprintln!("                 A.B.C.D/X - any routes equal or more specific");
-    eprintln!("                 12345     - any routes with path containing the ASN (not full AS Path regex)");
+    eprintln!("                 12345     - any routes with path containing the ASN");
+    eprintln!("                                            (not full AS Path regex)");
     eprintln!("                 12345:100 - any routes with attached community attribute");
-    eprintln!("       -j     use Juniper-style \"show route\" output (rather than Cisco \"show ip bgp\")");
-    eprintln!("       -i     run interactive shell for IP address queries after loading (default if no load filter)");
+    eprintln!("       -j     use Juniper-style \"show route\" output");
+    eprintln!("       -t     use Oliver-style |-delimitered output");
+    eprintln!("       -i     store observed routes in a routing trie and run interactive shell");
+    eprintln!("              to interrogate after loading");
     process::exit(1);
 }
 
@@ -59,26 +89,52 @@ fn main() -> Result<()> {
         dbg!(&*GETOPT);
     }
 
-    // let filename = GETOPT.args.get(0).expect("Expected input MRT filename");
-
     // Global
-    let mut routing_table = RoutingTable::new();
+    let mut cache = Cache::load(&format!("{}/{}", env::var("HOME")?, ".mrtdump-cache"));
+    let mut routing_table: RoutingTable<MrtRibEntry> = RoutingTable::new();
     let mut peers: HashMap<(IpAddr, String, u16), Rc<MrtPeer>> = HashMap::new();
 
+    let mut total_route_count: u64 = 0;
+    let mut total_path_count: u64 = 0;
+    let mut distinct_asns: HashSet<u32> = HashSet::new();
+    let start_time = Instant::now();
+
+    // For each file
     for filename in &GETOPT.args {
 
-        let mut count: u64 = 0;
-        let start_time = Instant::now();
+        let mut route_count: u64 = 0;
+        let mut path_count: u64 = 0;
 
-        let mut reader: Box<dyn BufRead> = {
-            if filename.ends_with(".bz2") {
-                Box::new(BufReader::new(BzDecoder::new(BufReader::new(std::fs::File::open(filename)?)))) as Box<dyn BufRead>
+        let file_start_time = Instant::now();
+
+        // Read the data, either from disk or network
+        let data = {
+            if filename.starts_with("https://") || filename.starts_with("http://") {
+                match cache.get_url(&filename) {
+                    Ok(data) => {
+                        cache.save()?;
+                        data
+                    },
+                    Err(e) => {
+                        eprintln!("HTTP(S) download error: {}", e);
+                        continue;
+                    }
+                }
             } else {
-                Box::new(BufReader::new(std::fs::File::open(filename)?)) as Box<dyn BufRead>
+                std::fs::read(&filename)?
             }
         };
 
-        // For each file
+        let mut reader = {
+            if filename.ends_with(".bz2") {
+                Box::new(BufReader::new(BzDecoder::new(data.as_slice()))) as Box<dyn BufRead>
+            } else if filename.ends_with(".gz") {
+                Box::new(BufReader::new(GzDecoder::new(data.as_slice()))) as Box<dyn BufRead>
+            } else {
+                Box::new(BufReader::new(data.as_slice())) as Box<dyn BufRead>
+            }
+        };
+
         let mut peer_index_table: MrtPeerIndexTable = MrtPeerIndexTable::default();
 
         // For each MRT message
@@ -98,28 +154,27 @@ fn main() -> Result<()> {
                                     peers.insert((collector_id, view_name.clone(), index as u16), Rc::clone(peer));
                                 }
                             }
-
-                            // If the filter is empty, or we are in verbose mode, then
-                            // show the Cisco header, because we will print summary routes
-                            // as we go
-                            if !GETOPT.filter.is_empty() {
-                                if GETOPT.juniper_output == false && GETOPT.terse_output == false {
-                                    cisco_show_ip_bgp_header(mrt.timestamp,
-                                                             &peer_index_table);
-                                }
-                            }
                         }
-                        MrtRecord::RibIpv4Unicast(nlri) => {
-                            if load_nlri(nlri, &mut routing_table) {
-                                count += 1;
+                        MrtRecord::RibIpv4Unicast(mut nlri) => {
+                            if filter_nlri(&mut nlri) {
+                                route_count += 1;
+                                total_route_count += 1;
+                                path_count += nlri.count_paths();
+                                total_path_count += nlri.count_paths();
+                                nlri.count_distinct_asns(&mut distinct_asns);
+                                load_nlri(nlri, &mut routing_table);
                             }
                         },
-                        MrtRecord::RibIpv6Unicast(nlri) => {
-                            if load_nlri(nlri, &mut routing_table) {
-                                count += 1;
+                        MrtRecord::RibIpv6Unicast(mut nlri) => {
+                            if filter_nlri(&mut nlri) {
+                                route_count += 1;
+                                total_route_count += 1;
+                                path_count += nlri.count_paths();
+                                total_path_count += nlri.count_paths();
+                                nlri.count_distinct_asns(&mut distinct_asns);
+                                load_nlri(nlri, &mut routing_table);
                             }
                         },
-
                         _ => {},
                     }
                 }
@@ -127,7 +182,15 @@ fn main() -> Result<()> {
                     // what a ball-ache just to catch EOF as a non-error - do better, Adam!
                     if let Some(e) = e.downcast_ref::<std::io::Error>() {
                         if e.kind() == ErrorKind::UnexpectedEof {
-                            eprintln!("{} entries from {} in {:?}", count, &filename, start_time.elapsed());
+                            if GETOPT.verbose {
+                                eprintln!("{} route(s), {} path(s) from file {} ({}:{}) in {:?}",
+                                          route_count,
+                                          path_count,
+                                          &filename,
+                                          &peer_index_table.collector_id,
+                                          &peer_index_table.view_name,
+                                          file_start_time.elapsed());
+                            }
                             break;
                         }
                     }
@@ -138,13 +201,20 @@ fn main() -> Result<()> {
         }
     }
 
+    eprintln!("Read {} route(s), {} path(s), {} distinct ASNs in {:?}",
+        total_route_count,
+        total_path_count,
+        distinct_asns.len(),
+        start_time.elapsed()
+    );
+
     // Take interactive queries on the loaded routing table if there are
     // no filters present, or if the interactive switch is requested
-    if GETOPT.interactive || GETOPT.filter.is_empty() {
+    if GETOPT.interactive {
         let mut reader = io::stdin().lock();
         loop {
             let mut query = String::new();
-            print!("> "); let _ = io::stdout().flush();
+            print!("router> "); let _ = io::stdout().flush();
             match reader.read_line(&mut query) {
                 Ok(usize) if usize > 0 => {
                     trim_newline(&mut query);
@@ -195,31 +265,10 @@ fn main() -> Result<()> {
 // all routes of course
 //
 // The NLRI is consumed by this operation
-pub fn load_nlri(mut nlri: MrtNlri,
-                    routing_table: &mut RoutingTable) -> bool {
+pub fn load_nlri(nlri: MrtNlri,
+                    routing_table: &mut RoutingTable<MrtRibEntry>) {
 
-    let matched: bool = GETOPT.filter.iter().fold(true, |x, f| {
-        if x {
-            f.eval(&mut nlri)
-        } else {
-            x
-        }
-    });
-
-    if matched {
-
-        // Display the matched route if there are filters in play
-        // or if verbose  is enabled
-        if GETOPT.verbose || GETOPT.filter.len() > 0 {
-            if GETOPT.juniper_output {
-                juniper_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
-            } else if GETOPT.terse_output {
-                csv_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
-            } else {
-                cisco_show_ip_bgp(&nlri.prefix, nlri.plen, &nlri.rib_entries);
-            }
-        }
-
+    if GETOPT.interactive {
         match nlri.prefix {
             IpAddr::V4(ipv4) => {
                 routing_table.v4.add(&ipv4, nlri.plen, nlri.rib_entries);
@@ -228,6 +277,23 @@ pub fn load_nlri(mut nlri: MrtNlri,
                 routing_table.v6.add(&ipv6, nlri.plen, nlri.rib_entries);
             }
         }
+    } else {
+        if GETOPT.juniper_output {
+            juniper_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+        } else if GETOPT.terse_output {
+            csv_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+        } else {
+            cisco_show_ip_bgp(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+        }
     }
-    matched
+}
+
+pub fn filter_nlri(nlri: &mut MrtNlri) -> bool {
+    GETOPT.filter.iter().fold(true, |x, f| {
+        if x {
+            f.eval(nlri)
+        } else {
+            x
+        }
+    })
 }

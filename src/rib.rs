@@ -14,7 +14,7 @@ pub struct MrtRibEntry {
 }
 
 impl MrtRibEntry {
-    pub fn get_aspath(&self) -> String {
+    pub fn get_aspath_str(&self) -> String {
         let empty = String::new();
         for attrib in &self.attributes {
             if let MrtAttribute::AsPath(ref aspath) = attrib {
@@ -22,6 +22,15 @@ impl MrtRibEntry {
             }
         }
         empty
+    }
+
+    pub fn get_aspath(&self) -> Option<&AsPath> {
+        for attrib in &self.attributes {
+            if let MrtAttribute::AsPath(ref aspath) = attrib {
+                return Some(aspath)
+            }
+        }
+        None
     }
 
     pub fn get_community(&self) -> Option<String> {
@@ -115,7 +124,10 @@ impl MrtRibEntry {
 
 impl Display for MrtRibEntry {
     fn fmt(&self, f: &mut Formatter<'_>) -> anyhow::Result<(), std::fmt::Error> {
-        write!(f, "{} \"{} {}\"", self.get_nexthop(), self.get_aspath(), self.get_origin_char())
+        write!(f, "{} \"{} {}\"",
+               self.get_nexthop(),
+               self.get_aspath().unwrap_or(&AsPath::default()).to_string(),
+               self.get_origin_char())
     }
 }
 
@@ -202,4 +214,19 @@ impl MrtNlri {
        Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })
     }
 
+    pub fn count_paths(&self) -> u64 {
+        self.rib_entries.len() as u64
+    }
+
+    pub fn count_distinct_asns(&self, asns: &mut HashSet<u32>) {
+        for path in &self.rib_entries {
+            if let Some(aspath) = path.get_aspath() {
+                for segment in &aspath.aspath_segments {
+                    for asn in &segment.asns {
+                        asns.insert(*asn);
+                    }
+                }
+            }
+        }
+    }
 }

@@ -1,12 +1,11 @@
 use crate::*;
+
+// Equivalent for Juniper is something like:
+// inet.0: 1066108 destinations, 8538665 routes (1065578 active, 1 holddown, 78503 hidden)
 pub fn cisco_show_ip_bgp_header(version: u32,
                                 peers: &MrtPeerIndexTable) {
     let (collector_id, view_name): (IpAddr, &String) = {
-        // if let Some(peers) = peers {
-            (peers.collector_id, &peers.view_name)
-        // } else {
-        //     (IpAddr::V4(Ipv4Addr::UNSPECIFIED), &String::from("default"))
-        // }
+        (peers.collector_id, &peers.view_name)
     };
     println!("BGP table version is {}, local router ID is {}, view is \"{}\"",
              version, collector_id, view_name);
@@ -36,7 +35,7 @@ pub fn cisco_show_ip_bgp(
                      rt.get_med().map(|x| x.to_string()).unwrap_or(String::new()),
                      rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),
                      CISCO_DEFAULT_WEIGHT,
-                     rt.get_aspath(),
+                     rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
                     rt.get_origin_char()
             );
         } else {
@@ -46,7 +45,7 @@ pub fn cisco_show_ip_bgp(
                      rt.get_med().map(|x| x.to_string()).unwrap_or(String::new()),
                      rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),
                      CISCO_DEFAULT_WEIGHT,
-                     rt.get_aspath(),
+                     rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
                      rt.get_origin_char()
             );
         }
@@ -55,17 +54,16 @@ pub fn cisco_show_ip_bgp(
 }
 
 pub fn cisco_show_ip_bgp_detail(
-    //peers: &MrtPeerIndexTable,
                                 prefix: &IpAddr,
                                 plen: u8,
                                 route_entries: &Vec<MrtRibEntry>) {
-    // let peers = peers.as_ref().unwrap();
+
     println!("BGP routing table entry for {}/{}", prefix, plen);
     println!("Paths: ({} available)", route_entries.len());
     println!("  Not advertised to any peer");   // standard Cisco gubbins
 
     for rt in route_entries {
-        println!("  {}", rt.get_aspath());
+        println!("  {}", rt.get_aspath().unwrap_or(&AsPath::default()).to_string());
         println!("    {} from {} ({})",
                  rt.get_nexthop(),
                  &rt.peer.peer_address,
@@ -120,7 +118,9 @@ pub fn juniper_show_route(
                      rt_text.join(", ")
             );
         }
-        println!("\t\t AS path: {} {}", rt.get_aspath(), rt.get_origin_char());
+        println!("\t\t AS path: {} {}",
+                 rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
+                 rt.get_origin_char());
         if let Some(communities) = rt.get_community() {
             println!("\t\t Communities: {}", &communities);
         }
@@ -146,7 +146,7 @@ pub fn csv_show_route(
             rt.get_nexthop(),
             rt.get_med().map_or(String::from(""), |x| x.to_string()),
             rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),
-            rt.get_aspath(), rt.get_origin_char(),
+            rt.get_aspath().unwrap_or(&AsPath::default()).to_string(), rt.get_origin_char(),
             rt.get_community().unwrap_or(String::from(""))
         );
     }

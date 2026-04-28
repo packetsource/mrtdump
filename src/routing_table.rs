@@ -9,16 +9,21 @@ use std::time::Instant;
 
 use crate::*;
 
-pub struct RoutingTable {
-    pub v4: Trie<Ipv4Addr>,
-    pub v6: Trie<Ipv6Addr>,
+pub struct RoutingTable<V> {
+    pub v4: Trie<Ipv4Addr, V>,
+    pub v6: Trie<Ipv6Addr, V>,
 }
 
-impl RoutingTable
+// pub struct RoutingTableIterator<'a> {
+//     pub table: &'a RoutingTable,
+//
+// }
+
+impl<V> RoutingTable<V>
 // where
 //     T: std::fmt::Display,
 {
-    pub fn get(&self, ip: &IpAddr) -> Option<(IpAddr, u8, &Vec<MrtRibEntry>)> {
+    pub fn get(&self, ip: &IpAddr) -> Option<(IpAddr, u8, &Vec<V>)> {
         match ip {
             IpAddr::V4(ip) => match self.v4.get(ip, 32) {
                 Some((route, plen, desc)) => Some((IpAddr::V4(route), plen, desc)),
@@ -32,8 +37,8 @@ impl RoutingTable
     }
 }
 
-impl RoutingTable {
-    pub fn new() -> RoutingTable {
+impl<V> RoutingTable<V> {
+    pub fn new() -> RoutingTable<V> {
         RoutingTable {
             v4: Trie::new(),
             v6: Trie::new(),

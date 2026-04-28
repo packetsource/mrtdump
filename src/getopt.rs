@@ -15,7 +15,7 @@ use crate::*;
 
 // pub const DEFAULT_INTERVAL: u64 = 60;                   // baked-in default for -i
 // pub const DEFAULT_ADDRESS: &str = "0.0.0.0:80";         // baked-in default for -s
-pub const DEFAULT_POSITIONAL: &str = "rib.mrt";  // default positional argument
+pub const DEFAULT_POSITIONAL: &str = "http://data.ris.ripe.net/rrc01/YYYY.MM/bview.YYYYMMDD.0000.gz";  // default positional argument
 
 // Define your command line arguments here: name and type
 #[derive(Debug)]
@@ -24,8 +24,6 @@ pub struct Getopt {
     pub juniper_output: bool,   // JUNOS style output
     pub terse_output: bool,     // pipe-separated CSV
     pub interactive: bool,  // interactive query post-load
-    // pub interval: u64,
-    // pub addr: String,
     pub filter: Vec<Filter>,
     pub args: Vec<String>,  // there are positional arguments
 }
@@ -38,8 +36,6 @@ impl Default for Getopt {
             juniper_output: false,
             terse_output: false,
             interactive: false,
-            // interval: DEFAULT_INTERVAL,
-            // addr: DEFAULT_ADDRESS.to_string(),
             filter: vec![],
             args: vec![],
         }
@@ -96,6 +92,13 @@ pub fn getopt() -> Getopt {
                 getopt.interactive = true;
                 continue;
             },
+            "-S" => {
+                let source: &str = &args.next()
+                    .expect("expected source name, eg. RIPE or routeviews");
+                getopt.args.append(&mut sources::expand_source(source)
+                    .expect(&format!("unknown source: {}", source)));
+                continue;
+            }
 
             // usage text
             "-h" => { crate::usage(); break; },
@@ -108,7 +111,10 @@ pub fn getopt() -> Getopt {
 
     // You can add an optional default positional here
     if getopt.args.len()==0 {
-        getopt.args.push(String::from(DEFAULT_POSITIONAL));
+
+        // Yesterday's date (so that we should be able to guarantee its there
+
+        getopt.args.push(expand_datetime(DEFAULT_POSITIONAL))
     }
     getopt
 }

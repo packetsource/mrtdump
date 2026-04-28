@@ -91,17 +91,3 @@ impl Default for MrtPeerIndexTable {
 }
 
 
-// Don't want a panicking index operator in the middle of an MRT file, thank you
-//
-// impl std::ops::Index<usize> for MrtPeerIndexTable {
-//     type Output = Rc<MrtPeer>;
-
-    //
-    // fn index(&self, index: usize) -> &Self::Output {
-    //     if index < self.peers.len() {
-    //         & self.peers[index]
-    //     } else {
-    //         panic!("peer index out of range!");
-    //     }
-    // }
-// }

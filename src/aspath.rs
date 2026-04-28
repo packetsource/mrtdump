@@ -1,12 +1,12 @@
 use crate::*;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct AsPathSegment {
     pub ordered: bool,  // ordered==true is AS_SEQUENCE, otherwise AS_SET
     pub asns: Vec<u32>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct AsPath {
     pub aspath_segments: Vec<AsPathSegment>
 }
