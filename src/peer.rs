@@ -3,7 +3,7 @@ use std::net::IpAddr;
 
 use crate::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MrtPeer {
     pub peer_type_a: bool,
     pub peer_type_i: bool,
@@ -17,7 +17,7 @@ pub struct MrtPeerIndexTable {
     pub collector_id: IpAddr,
     pub view_name: String,
     pub peer_count: u16,
-    pub peers: Vec<Rc<MrtPeer>>
+    pub peers: Vec<Arc<MrtPeer>>
 }
 
 
@@ -73,7 +73,7 @@ impl MrtPeerIndexTable {
             };
             let peer = MrtPeer { peer_type_a, peer_type_i, peer_id, peer_address, peer_as };
             // dbg!(&peer);
-            peer_index_table.peers.push(Rc::new(peer));
+            peer_index_table.peers.push(Arc::new(peer));
         }
         Ok(peer_index_table)
     }
@@ -85,7 +85,7 @@ impl Default for MrtPeerIndexTable {
             collector_id: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             view_name: String::new(),
             peer_count: 0,
-            peers: Vec::<std::rc::Rc<peer::MrtPeer>>::new()
+            peers: Vec::<std::sync::Arc<peer::MrtPeer>>::new()
         }
     }
 }

@@ -15,7 +15,7 @@ use std::fmt::{Display, Formatter};
 use std::process;
 use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use bzip2::read::BzDecoder;
@@ -47,15 +47,16 @@ mod output; use output::*;
 mod http; use http::*;
 
 mod routing_table; use routing_table::*;
-mod trie;
+mod radixtrie;
 mod prefix;
 mod community;
 mod cache;
 mod sources;
+mod sshserver;
 
 use community::*;
 use prefix::*;
-use trie::*;
+use radixtrie::*;
 use peer::*;
 use cache::*;
 use sources::*;
@@ -81,6 +82,8 @@ pub fn usage() {
     eprintln!("       -t     use Oliver-style |-delimitered output");
     eprintln!("       -i     store observed routes in a routing trie and run interactive shell");
     eprintln!("              to interrogate after loading");
+    eprintln!("       -s PORT start SSH server on PORT after loading (no authentication);");
+    eprintln!("              use: ssh -o StrictHostKeyChecking=no localhost -p PORT");
     process::exit(1);
 }
 
@@ -88,11 +91,11 @@ fn main() -> Result<()> {
     if GETOPT.verbose {
         dbg!(&*GETOPT);
     }
-
+    
     // Global
     let mut cache = Cache::load(&format!("{}/{}", env::var("HOME")?, ".mrtdump-cache"));
     let mut routing_table: RoutingTable<MrtRibEntry> = RoutingTable::new();
-    let mut peers: HashMap<(IpAddr, String, u16), Rc<MrtPeer>> = HashMap::new();
+    let mut peers: HashMap<(IpAddr, String, u16), Arc<MrtPeer>> = HashMap::new();
 
     let mut total_route_count: u64 = 0;
     let mut total_path_count: u64 = 0;
@@ -151,7 +154,7 @@ fn main() -> Result<()> {
                             // Load all the peers into the global table
                             for (index, peer) in peer_index_table.peers.iter().enumerate() {
                                 if index < u16::MAX.into() {
-                                    peers.insert((collector_id, view_name.clone(), index as u16), Rc::clone(peer));
+                                    peers.insert((collector_id, view_name.clone(), index as u16), Arc::clone(peer));
                                 }
                             }
                         }
@@ -208,6 +211,13 @@ fn main() -> Result<()> {
         start_time.elapsed()
     );
 
+    if let Some(port) = GETOPT.ssh_port {
+        let table = Arc::new(routing_table);
+        tokio::runtime::Runtime::new()?
+            .block_on(sshserver::run(table, port, GETOPT.juniper_output, GETOPT.terse_output))?;
+        return Ok(());
+    }
+
     // Take interactive queries on the loaded routing table if there are
     // no filters present, or if the interactive switch is requested
     if GETOPT.interactive {
@@ -216,30 +226,12 @@ fn main() -> Result<()> {
             let mut query = String::new();
             print!("router> "); let _ = io::stdout().flush();
             match reader.read_line(&mut query) {
-                Ok(usize) if usize > 0 => {
+                Ok(n) if n > 0 => {
                     trim_newline(&mut query);
-                    if query.is_empty() {
-                        continue;
-                    }
-                    match IpAddr::from_str(&query) {
-                        Ok(ipaddr) => {
-                            let result = routing_table.get(&ipaddr);
-                            if let Some((ipaddr, plen, route_entries)) = result {
-                                if GETOPT.juniper_output {
-                                    juniper_show_route(&ipaddr, plen, &route_entries);
-                                } else if GETOPT.terse_output {
-                                    csv_show_route(&ipaddr, plen, &route_entries);
-                                } else {
-                                    cisco_show_ip_bgp_detail(&ipaddr, plen, &route_entries);
-                                }
-                            } else {
-                                println!("Not found: {}", &query);
-                            }
-                        },
-                        _ => {
-                            println!("Invalid IP address: {}", &query);
-                        }
-                    }
+                    if query.is_empty() { continue; }
+                    let mut stdout = io::stdout();
+                    execute_query(query.trim(), &routing_table, &mut stdout,
+                                  GETOPT.juniper_output, GETOPT.terse_output).ok();
                 },
                 _ => { break; }
             }
@@ -271,19 +263,20 @@ pub fn load_nlri(nlri: MrtNlri,
     if GETOPT.interactive {
         match nlri.prefix {
             IpAddr::V4(ipv4) => {
-                routing_table.v4.add(&ipv4, nlri.plen, nlri.rib_entries);
+                routing_table.v4.add_vec(ipv4, nlri.plen, nlri.rib_entries);
             },
             IpAddr::V6(ipv6) => {
-                routing_table.v6.add(&ipv6, nlri.plen, nlri.rib_entries);
+                routing_table.v6.add_vec(ipv6, nlri.plen, nlri.rib_entries);
             }
         }
     } else {
+        let mut stdout = io::stdout();
         if GETOPT.juniper_output {
-            juniper_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+            juniper_show_route(&mut stdout, &nlri.prefix, nlri.plen, &nlri.rib_entries).ok();
         } else if GETOPT.terse_output {
-            csv_show_route(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+            csv_show_route(&mut stdout, &nlri.prefix, nlri.plen, &nlri.rib_entries).ok();
         } else {
-            cisco_show_ip_bgp(&nlri.prefix, nlri.plen, &nlri.rib_entries);
+            cisco_show_ip_bgp(&mut stdout, &nlri.prefix, nlri.plen, &nlri.rib_entries).ok();
         }
     }
 }
@@ -296,4 +289,107 @@ pub fn filter_nlri(nlri: &mut MrtNlri) -> bool {
             x
         }
     })
+}
+
+pub fn execute_query(
+    query: &str,
+    table: &RoutingTable<MrtRibEntry>,
+    writer: &mut dyn io::Write,
+    juniper: bool,
+    terse: bool,
+) -> std::io::Result<()> {
+
+    let mut distinct_asns: HashSet<u32> = HashSet::new();
+    let mut count_prefix_v4 = 0u64;
+    let mut count_prefix_v6 = 0u64;
+
+    // IP address → longest-prefix match
+    if let Ok(ipaddr) = IpAddr::from_str(query) {
+        match table.get(&ipaddr) {
+            Some((prefix, plen, entries)) => {
+                if juniper { juniper_show_route(writer, &prefix, plen, entries)?; }
+                else if terse { csv_show_route(writer, &prefix, plen, entries)?; }
+                else { cisco_show_ip_bgp_detail(writer, &prefix, plen, entries)?; }
+            }
+            None => writeln!(writer, "Not found: {}", query)?,
+        }
+        return Ok(());
+    }
+
+    // "X:Y" or "X:Y:Z" → community walk (filter retains only matching paths)
+    if let Ok(community) = Community::from_str(query) {
+        let filter = Filter::Community(community);
+
+        for (prefix, plen, entries) in table.iter() {
+            let mut nlri = MrtNlri {
+                sequence: 0, plen, prefix,
+                entry_count: entries.len() as u16,
+                rib_entries: entries.to_vec(),
+            };
+            if filter.eval(&mut nlri) {
+                cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
+                if nlri.prefix.is_ipv4() {
+                    count_prefix_v4 += 1;
+                } else if nlri.prefix.is_ipv6() {
+                    count_prefix_v6 += 1;
+                }
+                nlri.count_distinct_asns(&mut distinct_asns);
+            }
+        }
+        writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
+                 count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
+        return Ok(());
+    }
+
+    // comma-separated list → AS-path sequence walk
+    if query.contains(',') {
+        if let Ok(Filter::AsPath(seq)) = Filter::from_str(query) {
+            let filter = Filter::AsPath(seq);
+            for (prefix, plen, entries) in table.iter() {
+                let mut nlri = MrtNlri {
+                    sequence: 0, plen, prefix,
+                    entry_count: entries.len() as u16,
+                    rib_entries: entries.to_vec(),
+                };
+                if filter.eval(&mut nlri) {
+                    cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
+                    if nlri.prefix.is_ipv4() {
+                        count_prefix_v4 += 1;
+                    } else if nlri.prefix.is_ipv6() {
+                        count_prefix_v6 += 1;
+                    }
+                    nlri.count_distinct_asns(&mut distinct_asns);
+                }
+            }
+            writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
+                     count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
+            return Ok(());
+        }
+    }
+
+    // bare integer → AS-path walk (filter retains only matching paths)
+    if let Ok(asn) = query.parse::<u32>() {
+        let filter = Filter::As(asn);
+        for (prefix, plen, entries) in table.iter() {
+            let mut nlri = MrtNlri {
+                sequence: 0, plen, prefix,
+                entry_count: entries.len() as u16,
+                rib_entries: entries.to_vec(),
+            };
+            if filter.eval(&mut nlri) {
+                cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
+                if nlri.prefix.is_ipv4() {
+                    count_prefix_v4 += 1;
+                } else if nlri.prefix.is_ipv6() {
+                    count_prefix_v6 += 1;
+                }
+                nlri.count_distinct_asns(&mut distinct_asns);
+            }
+        }
+        writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
+                 count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
+        return Ok(());
+    }
+
+    writeln!(writer, "Unrecognised query: {}", query)
 }

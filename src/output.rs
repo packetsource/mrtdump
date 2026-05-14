@@ -1,35 +1,38 @@
+use std::io::Write;
 use crate::*;
 
 // Equivalent for Juniper is something like:
 // inet.0: 1066108 destinations, 8538665 routes (1065578 active, 1 holddown, 78503 hidden)
-pub fn cisco_show_ip_bgp_header(version: u32,
-                                peers: &MrtPeerIndexTable) {
+pub fn cisco_show_ip_bgp_header(writer: &mut dyn Write,
+                                version: u32,
+                                peers: &MrtPeerIndexTable) -> std::io::Result<()> {
     let (collector_id, view_name): (IpAddr, &String) = {
         (peers.collector_id, &peers.view_name)
     };
-    println!("BGP table version is {}, local router ID is {}, view is \"{}\"",
-             version, collector_id, view_name);
-    println!("Status codes: s suppressed, d damped, h history, * valid, > best, i - internal");
-    println!("Origin codes: i - IGP, e - EGP, ? - incomplete");
-    println!("");
-    println!("  {:24}{:24}\t{} {} {} {}",
+    writeln!(writer, "BGP table version is {}, local router ID is {}, view is \"{}\"",
+             version, collector_id, view_name)?;
+    writeln!(writer, "Status codes: s suppressed, d damped, h history, * valid, > best, i - internal")?;
+    writeln!(writer, "Origin codes: i - IGP, e - EGP, ? - incomplete")?;
+    writeln!(writer, "")?;
+    writeln!(writer, "  {:24}{:24}\t{} {} {} {}",
              "Network",
              "Next Hop",
              "Metric",
              "LocPrf",
              "Weight",
              "Path"
-    );
+    )?;
+    Ok(())
 }
-pub fn cisco_show_ip_bgp(
-    //peers: &MrtPeerIndexTable,
+
+pub fn cisco_show_ip_bgp(writer: &mut dyn Write,
                          prefix: &IpAddr,
                          plen: u8,
-                         route_entries: &Vec<MrtRibEntry>) {
+                         route_entries: &Vec<MrtRibEntry>) -> std::io::Result<()> {
     let mut count: u64 = 0;
     for rt in route_entries {
         if count==0 {
-            println!("* {:24}{:24}\t{}\t{}\t{}\t{} {}",
+            writeln!(writer, "* {:24}{:24}\t{}\t{}\t{}\t{} {}",
                      format!("{}/{}", prefix, plen),
                      rt.get_nexthop(),
                      rt.get_med().map(|x| x.to_string()).unwrap_or(String::new()),
@@ -37,9 +40,9 @@ pub fn cisco_show_ip_bgp(
                      CISCO_DEFAULT_WEIGHT,
                      rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
                     rt.get_origin_char()
-            );
+            )?;
         } else {
-            println!("* {:24}{:24}\t{}\t{}\t{}\t{} {}",
+            writeln!(writer, "* {:24}{:24}\t{}\t{}\t{}\t{} {}",
                      String::new(),
                      rt.get_nexthop(),
                      rt.get_med().map(|x| x.to_string()).unwrap_or(String::new()),
@@ -47,27 +50,28 @@ pub fn cisco_show_ip_bgp(
                      CISCO_DEFAULT_WEIGHT,
                      rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
                      rt.get_origin_char()
-            );
+            )?;
         }
         count += 1;
     }
+    Ok(())
 }
 
-pub fn cisco_show_ip_bgp_detail(
+pub fn cisco_show_ip_bgp_detail(writer: &mut dyn Write,
                                 prefix: &IpAddr,
                                 plen: u8,
-                                route_entries: &Vec<MrtRibEntry>) {
+                                route_entries: &Vec<MrtRibEntry>) -> std::io::Result<()> {
 
-    println!("BGP routing table entry for {}/{}", prefix, plen);
-    println!("Paths: ({} available)", route_entries.len());
-    println!("  Not advertised to any peer");   // standard Cisco gubbins
+    writeln!(writer, "BGP routing table entry for {}/{}", prefix, plen)?;
+    writeln!(writer, "Paths: ({} available)", route_entries.len())?;
+    writeln!(writer, "  Not advertised to any peer")?;
 
     for rt in route_entries {
-        println!("  {}", rt.get_aspath().unwrap_or(&AsPath::default()).to_string());
-        println!("    {} from {} ({})",
+        writeln!(writer, "  {}", rt.get_aspath().unwrap_or(&AsPath::default()).to_string())?;
+        writeln!(writer, "    {} from {} ({})",
                  rt.get_nexthop(),
                  &rt.peer.peer_address,
-                 &rt.peer.peer_id);
+                 &rt.peer.peer_id)?;
 
         let mut rt_text = Vec::<String>::new();
         rt_text.push(format!("Origin {}", match rt.get_origin() {
@@ -80,24 +84,22 @@ pub fn cisco_show_ip_bgp_detail(
             rt_text.push(format!("metric {}", med));
         }
         rt_text.push(format!("localpref {}", rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF)));
-
-        // More standard Cisco gubbins
         rt_text.push(String::from("weight 32768"));
         rt_text.push(String::from("valid"));
 
-        println!("      {}", rt_text.join(", "));
+        writeln!(writer, "      {}", rt_text.join(", "))?;
         if let Some(community) = rt.get_community() {
-            println!("      Community: {}", &community);
+            writeln!(writer, "      Community: {}", &community)?;
         }
     }
+    Ok(())
 }
 
 
-pub fn juniper_show_route(
-    //peers: &MrtPeerIndexTable,
+pub fn juniper_show_route(writer: &mut dyn Write,
                           prefix: &IpAddr,
                           plen: u8,
-                          route_entries: &Vec<MrtRibEntry>) {
+                          route_entries: &Vec<MrtRibEntry>) -> std::io::Result<()> {
     let mut count: u64 = 0;
     for rt in route_entries {
         let age = rt.origin_time.elapsed().unwrap_or_default();
@@ -109,38 +111,36 @@ pub fn juniper_show_route(
         rt_text.push(format!("from {}", rt.peer.peer_address));
 
         if count==0 {
-            println!("{}/{}\t{}",
+            writeln!(writer, "{}/{}\t{}",
                      prefix,
                      plen, rt_text.join(", ")
-            );
+            )?;
         } else {
-            println!("\t\t{}",
+            writeln!(writer, "\t\t{}",
                      rt_text.join(", ")
-            );
+            )?;
         }
-        println!("\t\t AS path: {} {}",
+        writeln!(writer, "\t\t AS path: {} {}",
                  rt.get_aspath().unwrap_or(&AsPath::default()).to_string(),
-                 rt.get_origin_char());
+                 rt.get_origin_char())?;
         if let Some(communities) = rt.get_community() {
-            println!("\t\t Communities: {}", &communities);
+            writeln!(writer, "\t\t Communities: {}", &communities)?;
         }
 
-        println!("\t\t> to {}", rt.get_nexthop());
+        writeln!(writer, "\t\t> to {}", rt.get_nexthop())?;
         count += 1;
     }
+    Ok(())
 }
 
-pub fn csv_show_route(
-    //peers: &MrtPeerIndexTable,
+pub fn csv_show_route(writer: &mut dyn Write,
                       prefix: &IpAddr,
                       plen: u8,
-                      route_entries: &Vec<MrtRibEntry>) {
-    // let peers = peers.as_ref().unwrap();
-
-    println!("route/plen|neighbor|next_hop|med|localpref|aspath|communities");
+                      route_entries: &Vec<MrtRibEntry>) -> std::io::Result<()> {
+    writeln!(writer, "route/plen|neighbor|next_hop|med|localpref|aspath|communities")?;
 
     for rt in route_entries {
-        println!("{}/{}|{}|{}|{}|{}|{} {}|{}",
+        writeln!(writer, "{}/{}|{}|{}|{}|{}|{} {}|{}",
             prefix, plen,
             rt.peer.peer_address,
             rt.get_nexthop(),
@@ -148,6 +148,7 @@ pub fn csv_show_route(
             rt.get_local_pref().unwrap_or(DEFAULT_LOCAL_PREF),
             rt.get_aspath().unwrap_or(&AsPath::default()).to_string(), rt.get_origin_char(),
             rt.get_community().unwrap_or(String::from(""))
-        );
+        )?;
     }
+    Ok(())
 }

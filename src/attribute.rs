@@ -6,7 +6,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::*;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MrtAttribute {
     Unknown,
     Origin(u8),

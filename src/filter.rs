@@ -3,8 +3,8 @@ use crate::*;
 pub enum Filter {
     LPM(IpAddr),
     Prefix(Prefix),
-    // AsPath(String),
     As(u32),
+    AsPath(Vec<u32>),
     Community(Community),
     Other(String)
 }
@@ -19,6 +19,13 @@ impl FromStr for Filter {
         match IpAddr::from_str(s) {
             Ok(ipaddr) => return Ok(Filter::LPM(ipaddr)),
             _ => {}
+        }
+
+        if s.contains(',') {
+            let parts: Result<Vec<u32>, _> = s.split(',').map(|p| p.trim().parse::<u32>()).collect();
+            if let Ok(seq) = parts {
+                return Ok(Filter::AsPath(seq));
+            }
         }
 
         match u32::from_str(s) {
@@ -71,6 +78,11 @@ impl Filter {
             // the paths with the specific ASN
             Filter::As(asn) => {
                 nlri.rib_entries.retain(|x| x.aspath_contains(*asn));
+                !nlri.rib_entries.is_empty()
+            },
+
+            Filter::AsPath(seq) => {
+                nlri.rib_entries.retain(|x| x.aspath_contains_sequence(seq));
                 !nlri.rib_entries.is_empty()
             },
 

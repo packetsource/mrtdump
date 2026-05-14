@@ -1,12 +1,12 @@
 use crate::*;
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct AsPathSegment {
     pub ordered: bool,  // ordered==true is AS_SEQUENCE, otherwise AS_SET
     pub asns: Vec<u32>,
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct AsPath {
     pub aspath_segments: Vec<AsPathSegment>
 }
@@ -59,6 +59,21 @@ impl AsPath {
     pub fn contains(&self, asn: u32) -> bool {
         for segment in &self.aspath_segments {
             if segment.asns.contains(&asn) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn contains_sequence(&self, seq: &[u32]) -> bool {
+        if seq.is_empty() {
+            return true;
+        }
+        for segment in &self.aspath_segments {
+            if !segment.ordered {
+                continue;
+            }
+            if segment.asns.windows(seq.len()).any(|w| w == seq) {
                 return true;
             }
         }

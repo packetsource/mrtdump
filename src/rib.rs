@@ -5,10 +5,10 @@ use std::time::SystemTime;
 
 use crate::*;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MrtRibEntry {
     pub peer_id: u16,
-    pub peer: Rc<MrtPeer>,
+    pub peer: Arc<MrtPeer>,
     pub origin_time: SystemTime,
     pub attributes: Vec<MrtAttribute>
 }
@@ -50,6 +50,17 @@ impl MrtRibEntry {
         for attrib in &self.attributes {
             if let MrtAttribute::AsPath(ref aspath) = attrib {
                 if aspath.contains(asn) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn aspath_contains_sequence(&self, seq: &[u32]) -> bool {
+        for attrib in &self.attributes {
+            if let MrtAttribute::AsPath(ref aspath) = attrib {
+                if aspath.contains_sequence(seq) {
                     return true;
                 }
             }
@@ -168,7 +179,7 @@ impl MrtNlri {
         Ok(
             MrtRibEntry {
                 peer_id,
-                peer: Rc::clone(peer_index_table
+                peer: Arc::clone(peer_index_table
                     .peers
                     .get(peer_id as usize)
                     .ok_or(anyhow!("invalid peer index {}", peer_id))?),

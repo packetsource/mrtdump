@@ -7,7 +7,7 @@ pub fn expand_source(source: &str) -> Result<Vec<String>> {
     let result: Vec<String> = match source {
         "RIPE" => {
             let mut result = Vec::<String>::new();
-            for i in 1..=25 {
+            for i in 1..=26 {
                 let s = expand_datetime(&format!("https://data.ris.ripe.net/rrc{:02}/YYYY.MM/bview.YYYYMMDD.0000.gz", i));
                 //eprintln!("RIPE: {}", s);
                 result.push(s);

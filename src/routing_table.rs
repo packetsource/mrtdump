@@ -9,27 +9,30 @@ use std::time::Instant;
 
 use crate::*;
 
-pub struct RoutingTable<V> {
-    pub v4: Trie<Ipv4Addr, V>,
-    pub v6: Trie<Ipv6Addr, V>,
+pub struct RoutingTable<V: std::cmp::PartialEq> {
+    pub v4: RadixTrie<Ipv4Addr, V>,
+    pub v6: RadixTrie<Ipv6Addr, V>,
 }
 
-// pub struct RoutingTableIterator<'a> {
-//     pub table: &'a RoutingTable,
-//
-// }
-
-impl<V> RoutingTable<V>
+impl<V: std::cmp::PartialEq> RoutingTable<V>
 // where
 //     T: std::fmt::Display,
 {
+    pub fn iter(&self) -> impl Iterator<Item = (IpAddr, u8, &Vec<V>)> {
+        let v4 = self.v4.iter()
+            .filter_map(|(a, len, v)| v.map(|v| (IpAddr::V4(a), len, v)));
+        let v6 = self.v6.iter()
+            .filter_map(|(a, len, v)| v.map(|v| (IpAddr::V6(a), len, v)));
+        v4.chain(v6)
+    }
+
     pub fn get(&self, ip: &IpAddr) -> Option<(IpAddr, u8, &Vec<V>)> {
         match ip {
-            IpAddr::V4(ip) => match self.v4.get(ip, 32) {
+            IpAddr::V4(ip) => match self.v4.get(*ip, 32) {
                 Some((route, plen, desc)) => Some((IpAddr::V4(route), plen, desc)),
                 None => None,
             },
-            IpAddr::V6(ip) => match self.v6.get(ip, 128) {
+            IpAddr::V6(ip) => match self.v6.get(*ip, 128) {
                 Some((route, plen, desc)) => Some((IpAddr::V6(route), plen, desc)),
                 None => None,
             },
@@ -37,11 +40,11 @@ impl<V> RoutingTable<V>
     }
 }
 
-impl<V> RoutingTable<V> {
+impl<V: std::cmp::PartialEq> RoutingTable<V> {
     pub fn new() -> RoutingTable<V> {
         RoutingTable {
-            v4: Trie::new(),
-            v6: Trie::new(),
+            v4: RadixTrie::new(Ipv4Addr::UNSPECIFIED, 0),
+            v6: RadixTrie::new(Ipv6Addr::UNSPECIFIED, 0),
         }
     }
 }

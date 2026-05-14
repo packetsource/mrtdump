@@ -1,6 +1,6 @@
 use crate::*;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Community {
     Standard((u16, u16)),
     Large((u32, u32, u32))  // Not quite supported yet in attribute parsing

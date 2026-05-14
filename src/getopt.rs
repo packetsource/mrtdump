@@ -24,6 +24,7 @@ pub struct Getopt {
     pub juniper_output: bool,   // JUNOS style output
     pub terse_output: bool,     // pipe-separated CSV
     pub interactive: bool,  // interactive query post-load
+    pub ssh_port: Option<u16>,
     pub filter: Vec<Filter>,
     pub args: Vec<String>,  // there are positional arguments
 }
@@ -36,6 +37,7 @@ impl Default for Getopt {
             juniper_output: false,
             terse_output: false,
             interactive: false,
+            ssh_port: None,
             filter: vec![],
             args: vec![],
         }
@@ -89,6 +91,12 @@ pub fn getopt() -> Getopt {
                 continue;
             },
             "-i" => {
+                getopt.interactive = true;
+                continue;
+            },
+            "-s" => {
+                let port_str = args.next().expect("expected PORT after -s");
+                getopt.ssh_port = Some(port_str.parse().expect("PORT must be a valid u16"));
                 getopt.interactive = true;
                 continue;
             },
