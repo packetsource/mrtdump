@@ -9,7 +9,7 @@ bzip2 = "0.4.4"
 anyhow = "1.0.86"
 time = { version = "0.3.36", features = ["formatting", "parsing"] }
 lazy_static = "1.5.0"
-reqwest = { version = "0.12.9", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking"] }
 url = "2.5.3"
 bytes = "1.8.0"
 flate2 = { git = "https://github.com/rust-lang/flate2-rs" }
