@@ -38,6 +38,19 @@ impl<V: std::cmp::PartialEq> RoutingTable<V>
             },
         }
     }
+    pub fn get_exact(&self, ip: &IpAddr, len: u8) -> Option<(IpAddr, u8, &Vec<V>)> {
+        match ip {
+            IpAddr::V4(ip) => match self.v4.get(*ip, len.min(32)) {
+                Some((route, plen, desc)) if plen == len => Some((IpAddr::V4(route), plen, desc)),
+                _ => None,
+            },
+            IpAddr::V6(ip) => match self.v6.get(*ip, len.min(128)) {
+                Some((route, plen, desc)) if plen == len => Some((IpAddr::V6(route), plen, desc)),
+                _ => None,
+            },
+        }
+    }
+
 }
 
 impl<V: std::cmp::PartialEq> RoutingTable<V> {

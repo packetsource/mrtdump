@@ -2,7 +2,7 @@
 use std::fmt::{Display, Formatter};
 use std::net::IpAddr;
 use std::time::SystemTime;
-
+use regex::Regex;
 use crate::*;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -45,7 +45,6 @@ impl MrtRibEntry {
         None
     }
 
-
     pub fn aspath_contains(&self, asn: u32) -> bool {
         for attrib in &self.attributes {
             if let MrtAttribute::AsPath(ref aspath) = attrib {
@@ -78,6 +77,21 @@ impl MrtRibEntry {
         }
         false
     }
+
+    pub fn community_contains_regex(&self, re: &Regex) -> bool {
+        for attrib in &self.attributes {
+            if let MrtAttribute::Community(ref community_list) = attrib {
+                for community in community_list {
+                    if re.is_match(&community.to_string()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+
     pub fn get_med(&self) -> Option<u32> {
         for attrib in &self.attributes {
             if let MrtAttribute::MultiExitDisc(med) = attrib {
@@ -129,6 +143,21 @@ impl MrtRibEntry {
             },
             2 => '?',
             _ => '!'
+        }
+    }
+    pub fn count_paths(entries: &Vec<MrtRibEntry>) -> u64 {
+        entries.len() as u64
+    }
+
+    pub fn count_distinct_asns(asns: &mut HashSet<u32>, entries: &Vec<MrtRibEntry>) {
+        for path in entries {
+            if let Some(aspath) = path.get_aspath() {
+                for segment in &aspath.aspath_segments {
+                    for asn in &segment.asns {
+                        asns.insert(*asn);
+                    }
+                }
+            }
         }
     }
 }
@@ -225,19 +254,19 @@ impl MrtNlri {
        Ok(MrtNlri { sequence, plen, prefix, entry_count, rib_entries })
     }
 
-    pub fn count_paths(&self) -> u64 {
-        self.rib_entries.len() as u64
-    }
-
-    pub fn count_distinct_asns(&self, asns: &mut HashSet<u32>) {
-        for path in &self.rib_entries {
-            if let Some(aspath) = path.get_aspath() {
-                for segment in &aspath.aspath_segments {
-                    for asn in &segment.asns {
-                        asns.insert(*asn);
-                    }
-                }
-            }
-        }
-    }
+    // pub fn count_paths(&self) -> u64 {
+    //     self.rib_entries.len() as u64
+    // }
+    //
+    // pub fn count_distinct_asns(&self, asns: &mut HashSet<u32>) {
+    //     for path in &self.rib_entries {
+    //         if let Some(aspath) = path.get_aspath() {
+    //             for segment in &aspath.aspath_segments {
+    //                 for asn in &segment.asns {
+    //                     asns.insert(*asn);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 }

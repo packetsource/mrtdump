@@ -1,3 +1,4 @@
+use regex::Regex;
 use crate::*;
 #[derive(Debug)]
 pub enum Filter {
@@ -6,6 +7,8 @@ pub enum Filter {
     As(u32),
     AsPath(Vec<u32>),
     Community(Community),
+    AsPathRegex(Regex),
+    CommunityRegex(Regex),
     Other(String)
 }
 
@@ -88,6 +91,16 @@ impl Filter {
 
             Filter::Community(comm) => {
                 nlri.rib_entries.retain(|x| x.community_contains(comm));
+                !nlri.rib_entries.is_empty()
+            }
+
+            Filter::AsPathRegex(re_aspath) => {
+                nlri.rib_entries.retain(|x| re_aspath.is_match(&x.get_aspath_str()));
+                !nlri.rib_entries.is_empty()
+            },
+
+            Filter::CommunityRegex(re_comm) => {
+                nlri.rib_entries.retain(|x| x.community_contains_regex(re_comm));
                 !nlri.rib_entries.is_empty()
             }
 

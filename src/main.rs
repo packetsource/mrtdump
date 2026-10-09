@@ -53,6 +53,7 @@ mod community;
 mod cache;
 mod sources;
 mod sshserver;
+mod cli;
 
 use community::*;
 use prefix::*;
@@ -99,7 +100,8 @@ fn main() -> Result<()> {
 
     let mut total_route_count: u64 = 0;
     let mut total_path_count: u64 = 0;
-    let mut distinct_asns: HashSet<u32> = HashSet::new();
+    let mut distinct_asns = HashSet::<u32>::new();
+
     let start_time = Instant::now();
 
     // For each file
@@ -162,9 +164,9 @@ fn main() -> Result<()> {
                             if filter_nlri(&mut nlri) {
                                 route_count += 1;
                                 total_route_count += 1;
-                                path_count += nlri.count_paths();
-                                total_path_count += nlri.count_paths();
-                                nlri.count_distinct_asns(&mut distinct_asns);
+                                path_count += MrtRibEntry::count_paths(&nlri.rib_entries);
+                                total_path_count += MrtRibEntry::count_paths(&nlri.rib_entries);
+                                MrtRibEntry::count_distinct_asns(&mut distinct_asns, &nlri.rib_entries);
                                 load_nlri(nlri, &mut routing_table);
                             }
                         },
@@ -172,9 +174,9 @@ fn main() -> Result<()> {
                             if filter_nlri(&mut nlri) {
                                 route_count += 1;
                                 total_route_count += 1;
-                                path_count += nlri.count_paths();
-                                total_path_count += nlri.count_paths();
-                                nlri.count_distinct_asns(&mut distinct_asns);
+                                path_count += MrtRibEntry::count_paths(&nlri.rib_entries);
+                                total_path_count += MrtRibEntry::count_paths(&nlri.rib_entries);
+                                MrtRibEntry::count_distinct_asns(&mut distinct_asns, &nlri.rib_entries);
                                 load_nlri(nlri, &mut routing_table);
                             }
                         },
@@ -218,24 +220,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Take interactive queries on the loaded routing table if there are
-    // no filters present, or if the interactive switch is requested
+    // Interactive shell on the local terminal (or stdin) over the loaded table
     if GETOPT.interactive {
-        let mut reader = io::stdin().lock();
-        loop {
-            let mut query = String::new();
-            print!("router> "); let _ = io::stdout().flush();
-            match reader.read_line(&mut query) {
-                Ok(n) if n > 0 => {
-                    trim_newline(&mut query);
-                    if query.is_empty() { continue; }
-                    let mut stdout = io::stdout();
-                    execute_query(query.trim(), &routing_table, &mut stdout,
-                                  GETOPT.juniper_output, GETOPT.terse_output).ok();
-                },
-                _ => { break; }
-            }
-        }
+        return cli::local::run(
+            Arc::new(routing_table),
+            cli::commands::OutputFormat::from_flags(GETOPT.juniper_output, GETOPT.terse_output),
+        );
     }
 
     // Load the MRT peer table for the file into the global hash
@@ -289,107 +279,4 @@ pub fn filter_nlri(nlri: &mut MrtNlri) -> bool {
             x
         }
     })
-}
-
-pub fn execute_query(
-    query: &str,
-    table: &RoutingTable<MrtRibEntry>,
-    writer: &mut dyn io::Write,
-    juniper: bool,
-    terse: bool,
-) -> std::io::Result<()> {
-
-    let mut distinct_asns: HashSet<u32> = HashSet::new();
-    let mut count_prefix_v4 = 0u64;
-    let mut count_prefix_v6 = 0u64;
-
-    // IP address → longest-prefix match
-    if let Ok(ipaddr) = IpAddr::from_str(query) {
-        match table.get(&ipaddr) {
-            Some((prefix, plen, entries)) => {
-                if juniper { juniper_show_route(writer, &prefix, plen, entries)?; }
-                else if terse { csv_show_route(writer, &prefix, plen, entries)?; }
-                else { cisco_show_ip_bgp_detail(writer, &prefix, plen, entries)?; }
-            }
-            None => writeln!(writer, "Not found: {}", query)?,
-        }
-        return Ok(());
-    }
-
-    // "X:Y" or "X:Y:Z" → community walk (filter retains only matching paths)
-    if let Ok(community) = Community::from_str(query) {
-        let filter = Filter::Community(community);
-
-        for (prefix, plen, entries) in table.iter() {
-            let mut nlri = MrtNlri {
-                sequence: 0, plen, prefix,
-                entry_count: entries.len() as u16,
-                rib_entries: entries.to_vec(),
-            };
-            if filter.eval(&mut nlri) {
-                cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
-                if nlri.prefix.is_ipv4() {
-                    count_prefix_v4 += 1;
-                } else if nlri.prefix.is_ipv6() {
-                    count_prefix_v6 += 1;
-                }
-                nlri.count_distinct_asns(&mut distinct_asns);
-            }
-        }
-        writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
-                 count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
-        return Ok(());
-    }
-
-    // comma-separated list → AS-path sequence walk
-    if query.contains(',') {
-        if let Ok(Filter::AsPath(seq)) = Filter::from_str(query) {
-            let filter = Filter::AsPath(seq);
-            for (prefix, plen, entries) in table.iter() {
-                let mut nlri = MrtNlri {
-                    sequence: 0, plen, prefix,
-                    entry_count: entries.len() as u16,
-                    rib_entries: entries.to_vec(),
-                };
-                if filter.eval(&mut nlri) {
-                    cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
-                    if nlri.prefix.is_ipv4() {
-                        count_prefix_v4 += 1;
-                    } else if nlri.prefix.is_ipv6() {
-                        count_prefix_v6 += 1;
-                    }
-                    nlri.count_distinct_asns(&mut distinct_asns);
-                }
-            }
-            writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
-                     count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
-            return Ok(());
-        }
-    }
-
-    // bare integer → AS-path walk (filter retains only matching paths)
-    if let Ok(asn) = query.parse::<u32>() {
-        let filter = Filter::As(asn);
-        for (prefix, plen, entries) in table.iter() {
-            let mut nlri = MrtNlri {
-                sequence: 0, plen, prefix,
-                entry_count: entries.len() as u16,
-                rib_entries: entries.to_vec(),
-            };
-            if filter.eval(&mut nlri) {
-                cisco_show_ip_bgp(writer, &prefix, plen, &nlri.rib_entries)?;
-                if nlri.prefix.is_ipv4() {
-                    count_prefix_v4 += 1;
-                } else if nlri.prefix.is_ipv6() {
-                    count_prefix_v6 += 1;
-                }
-                nlri.count_distinct_asns(&mut distinct_asns);
-            }
-        }
-        writeln!(writer, "{} IPv4 route(s), {} IPv6 routes(s), {} distinct ASNs",
-                 count_prefix_v4, count_prefix_v6, distinct_asns.len())?;
-        return Ok(());
-    }
-
-    writeln!(writer, "Unrecognised query: {}", query)
 }

@@ -1,31 +1,67 @@
+//! SSH front end: serves the shared `crate::cli` shell over russh.
+//!
+//! This module is only transport glue: authentication, pty / shell / exec /
+//! window-change requests, the host key, and an `SshTransport` that carries
+//! the shell's output back over the channel.
+
 use std::sync::Arc;
 
 use russh::keys::ssh_key;
 use russh::server::{self, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
-use crate::routing_table::RoutingTable;
 use crate::rib::MrtRibEntry;
+use crate::routing_table::RoutingTable;
+
+use crate::cli::commands::OutputFormat;
+use crate::cli::handlers::TableSummary;
+use crate::cli::shell::{self, Input, Params, Transport};
+
+// ─── Transport ────────────────────────────────────────────────────────────────
+
+/// Carries a shell session's output over an SSH channel.
+struct SshTransport {
+    handle: server::Handle,
+    channel: ChannelId,
+}
+
+impl Transport for SshTransport {
+    async fn write(&mut self, data: Vec<u8>) -> bool {
+        self.handle.data(self.channel, data).await.is_ok()
+    }
+
+    async fn write_err(&mut self, data: Vec<u8>) -> bool {
+        self.handle.extended_data(self.channel, 1, data).await.is_ok()
+    }
+
+    async fn finish(self, code: u32) {
+        let _ = self.handle.exit_status_request(self.channel, code).await;
+        let _ = self.handle.eof(self.channel).await;
+        let _ = self.handle.close(self.channel).await;
+    }
+}
 
 // ─── Server factory ───────────────────────────────────────────────────────────
 
 struct SshServer {
     table: Arc<RoutingTable<MrtRibEntry>>,
-    juniper: bool,
-    terse: bool,
+    summary: Arc<TableSummary>,
+    format: OutputFormat,
 }
 
 impl server::Server for SshServer {
     type Handler = ClientSession;
 
-    fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> ClientSession {
+    fn new_client(&mut self, peer: Option<std::net::SocketAddr>) -> ClientSession {
         ClientSession {
             table: Arc::clone(&self.table),
-            juniper: self.juniper,
-            terse: self.terse,
-            line_buf: Vec::new(),
-            channel_id: None,
+            summary: Arc::clone(&self.summary),
+            format: self.format,
+            peer,
+            pty: None,
+            input_tx: None,
         }
     }
 
@@ -36,12 +72,33 @@ impl server::Server for SshServer {
 
 // ─── Per-connection handler ───────────────────────────────────────────────────
 
+/// Thin russh glue: it records the connection's pty, then hands the channel to
+/// a `cli::shell` task and forwards client input to it.
 struct ClientSession {
     table: Arc<RoutingTable<MrtRibEntry>>,
-    juniper: bool,
-    terse: bool,
-    line_buf: Vec<u8>,
-    channel_id: Option<ChannelId>,
+    summary: Arc<TableSummary>,
+    format: OutputFormat,
+    peer: Option<std::net::SocketAddr>,
+    pty: Option<(u32, u32)>,
+    input_tx: Option<mpsc::UnboundedSender<Input>>,
+}
+
+impl ClientSession {
+    fn params(&self) -> Params {
+        Params {
+            table: Arc::clone(&self.table),
+            summary: Arc::clone(&self.summary),
+            peer: self.peer,
+            format: self.format,
+            pty: self.pty,
+        }
+    }
+
+    fn forward(&self, input: Input) {
+        if let Some(tx) = &self.input_tx {
+            let _ = tx.send(input);
+        }
+    }
 }
 
 impl server::Handler for ClientSession {
@@ -65,24 +122,39 @@ impl server::Handler for ClientSession {
 
     async fn channel_open_session(
         &mut self,
-        channel: Channel<Msg>,
+        _channel: Channel<Msg>,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        self.channel_id = Some(channel.id());
         Ok(true)
     }
 
     async fn pty_request(
         &mut self,
-        _channel: ChannelId,
+        channel: ChannelId,
         _term: &str,
-        _col_width: u32,
-        _row_height: u32,
+        col_width: u32,
+        row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.pty = Some((col_width, row_height));
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.pty = Some((col_width, row_height));
+        self.forward(Input::Resize { cols: col_width, rows: row_height });
         Ok(())
     }
 
@@ -91,77 +163,61 @@ impl server::Handler for ClientSession {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.data(channel, b"router> ".to_vec())?;
+        session.channel_success(channel)?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.input_tx = Some(tx);
+        let transport = SshTransport { handle: session.handle(), channel };
+        tokio::spawn(shell::run_shell(self.params(), transport, rx));
         Ok(())
     }
 
-    async fn data(
+    /// `ssh host "show route 192.0.2.1"`: one command, no pty session.
+    async fn exec_request(
         &mut self,
         channel: ChannelId,
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        for &byte in data {
-            match byte {
-                3 | 4 => {
-                    // Ctrl+C / Ctrl+D
-                    return Err(russh::Error::Disconnect);
-                }
-                0x7f | 0x08 => {
-                    // Backspace / DEL
-                    if !self.line_buf.is_empty() {
-                        self.line_buf.pop();
-                        session.data(channel, b"\x08 \x08".to_vec())?;
-                    }
-                }
-                b'\r' | b'\n' => {
-                    session.data(channel, b"\r\n".to_vec())?;
-                    let line = std::str::from_utf8(&self.line_buf)
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    self.line_buf.clear();
+        session.channel_success(channel)?;
+        let command = String::from_utf8_lossy(data).into_owned();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.input_tx = Some(tx);
+        let transport = SshTransport { handle: session.handle(), channel };
+        tokio::spawn(shell::run_exec(self.params(), transport, rx, command));
+        Ok(())
+    }
 
-                    if !line.is_empty() {
-                        let mut out: Vec<u8> = Vec::new();
-                        crate::execute_query(&line, &self.table, &mut out,
-                                             self.juniper, self.terse).ok();
-                        let ssh_out = lf_to_crlf(&out);
-                        if !ssh_out.is_empty() {
-                            session.data(channel, ssh_out)?;
-                        }
-                    }
-                    session.data(channel, b"router> ".to_vec())?;
-                }
-                _ => {
-                    self.line_buf.push(byte);
-                    session.data(channel, vec![byte])?;
-                }
-            }
-        }
+    async fn data(
+        &mut self,
+        _channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.forward(Input::Data(data.to_vec()));
         Ok(())
     }
 
     async fn channel_eof(
         &mut self,
-        channel: ChannelId,
-        session: &mut Session,
+        _channel: ChannelId,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.close(channel)?;
+        self.forward(Input::Eof);
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // Dropping the sender ends the shell task.
+        self.input_tx = None;
         Ok(())
     }
 }
 
-fn lf_to_crlf(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len() + 16);
-    for &b in input {
-        if b == b'\n' {
-            out.push(b'\r');
-        }
-        out.push(b);
-    }
-    out
-}
+// ─── Host key persistence ─────────────────────────────────────────────────────
 
 // ─── Host key persistence ─────────────────────────────────────────────────────
 
@@ -201,6 +257,7 @@ fn load_or_generate_key() -> anyhow::Result<russh::keys::PrivateKey> {
     Ok(key)
 }
 
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub async fn run(
@@ -217,7 +274,12 @@ pub async fn run(
         ..Default::default()
     });
 
-    let mut server = SshServer { table, juniper, terse };
+    let summary = Arc::new(TableSummary::from_table(&table));
+    let mut server = SshServer {
+        table,
+        summary,
+        format: OutputFormat::from_flags(juniper, terse),
+    };
     let socket = TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("SSH server listening on 0.0.0.0:{}", port);
     server.run_on_socket(config, &socket).await?;
