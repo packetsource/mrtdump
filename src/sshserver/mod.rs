@@ -66,6 +66,16 @@ impl server::Server for SshServer {
     }
 
     fn handle_session_error(&mut self, error: <ClientSession as server::Handler>::Error) {
+        // A client dropping the TCP connection without an SSH disconnect
+        // (Ctrl-C, a killed script, a network drop) is routine, not an error.
+        if let russh::Error::IO(e) = &error {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+            ) {
+                return;
+            }
+        }
         eprintln!("SSH session error: {error:#?}");
     }
 }
@@ -103,6 +113,12 @@ impl ClientSession {
 
 impl server::Handler for ClientSession {
     type Error = russh::Error;
+
+    /// There is no authentication: accept `none` so that clients without a
+    /// usable key are never pushed on to a password prompt that cannot succeed.
+    async fn auth_none(&mut self, _user: &str) -> Result<server::Auth, Self::Error> {
+        Ok(server::Auth::Accept)
+    }
 
     async fn auth_publickey(
         &mut self,
